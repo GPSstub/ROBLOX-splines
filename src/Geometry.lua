@@ -56,18 +56,51 @@ function G.at(path,d)
     end
     return mix(ps[lo],ps[hi],(d-ds[lo])/(ds[hi]-ds[lo]))
 end
-function G.frame(path,d)
+local function tangent(path,d)
     local delta=math.min(0.25,path.length/4)
-    local tangent=G.at(path,d+delta)-G.at(path,d-delta)
-    if tangent.Magnitude<EPS then tangent=G.at(path,d+delta)-G.at(path,d) end
-    if tangent.Magnitude<EPS then tangent=G.at(path,d)-G.at(path,d-delta) end
-    if tangent.Magnitude<EPS then tangent=Vector3.new(0,0,-1) end
-    local forward=tangent.Unit
-    local worldUp=Vector3.new(0,1,0)
-    if math.abs(forward:Dot(worldUp))>0.995 then worldUp=Vector3.new(0,0,1) end
-    local right=forward:Cross(worldUp).Unit
-    local up=right:Cross(forward).Unit
-    return G.at(path,d),forward,right,up
+    local t=G.at(path,d+delta)-G.at(path,d-delta)
+    if t.Magnitude<EPS then t=G.at(path,d+delta)-G.at(path,d) end
+    if t.Magnitude<EPS then t=G.at(path,d)-G.at(path,d-delta) end
+    return t.Magnitude<EPS and Vector3.new(0,0,-1) or t.Unit
+end
+local function initialRight(f)
+    local up=math.abs(f.Y)>0.995 and Vector3.new(0,0,1) or Vector3.yAxis
+    return f:Cross(up).Unit
+end
+-- Minimal rotation transporting the previous frame to the next tangent.
+local function transport(r,a,b)
+    local cross=a:Cross(b)
+    local sin=cross.Magnitude
+    local cos=math.clamp(a:Dot(b),-1,1)
+    if sin>EPS then
+        local axis=cross/sin
+        r=r*cos+axis:Cross(r)*sin+axis*(axis:Dot(r)*(1-cos))
+    end
+    r=r-b*r:Dot(b)
+    return r.Magnitude>EPS and r.Unit or initialRight(b)
+end
+local function frames(path)
+    if path.frames then return path.frames end
+    local cache={}
+    for i,d in ipairs(path.distances) do
+        local f=tangent(path,d)
+        local r=i==1 and initialRight(f) or transport(cache[i-1].r,cache[i-1].f,f)
+        cache[i]={f=f,r=r}
+    end
+    path.frames=cache
+    return cache
+end
+function G.frame(path,d)
+    d=math.clamp(d,0,path.length)
+    local cache=frames(path)
+    local lo,hi=1,#cache
+    while hi-lo>1 do
+        local m=math.floor((lo+hi)/2)
+        if path.distances[m]<=d then lo=m else hi=m end
+    end
+    local f=tangent(path,d)
+    local r=transport(cache[lo].r,cache[lo].f,f)
+    return G.at(path,d),f,r,r:Cross(f).Unit
 end
 -- Continuous geometry includes both endpoints and distributes segment length evenly.
 function G.segments(path,step,limit)

@@ -1,18 +1,20 @@
 # Roadmap
 
-PathForge aims to be a general-purpose procedural level-design plugin for Roblox Studio, independent of any one game or art style.
+## v0.3 stability preview
+- [x] Explicit asset-backed mesh workflow
+- [x] Transported frames and reusable guide instances
+- [x] Local-coordinate path metadata and stale-target checks
+- [x] In-Studio geometry test command
+- [ ] Execute Studio installation, mesh persistence, undo and failure tests
 
-## Next update
-- [ ] Validate installation, mesh persistence, collision and undo in Studio.
-- [ ] Continuous profile extrusion for roads, walls, rails and pipes.
-- [ ] Distance-based UV mapping for generated meshes.
-- [ ] Better preview and error reporting.
+## v0.4 — Geometry
+- [ ] Continuous profile extrusion and adaptive subdivision
+- [ ] Distance-based UV mapping
+- [ ] Geometry budget and chunking
 
 ## Later
-- [ ] Asset and material libraries with reusable presets.
-- [ ] Scatter and brush placement with deterministic variation.
-- [ ] Multi-mesh deformation and improved path orientation.
-- [ ] Terrain-aware placement and terrain editing tools.
-- [ ] Performance profiling and larger-map support.
+- [ ] Viewport handles, live preview and context-aware inspector
+- [ ] Asset/material libraries and reusable generation rules
+- [ ] Scatter, brush placement and terrain-aware editing
 
-Priorities may change after testing. No release dates are committed.
+No release dates are committed. Priorities depend on Studio validation.

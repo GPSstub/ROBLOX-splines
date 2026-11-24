@@ -1,8 +1,9 @@
--- PathForge v0.2 | Studio-only procedural path editor. No HTTP or runtime scripts.
+-- PathForge v0.3 | Studio-only path editor. Mesh uploads are explicit.
 if not plugin then return end
 local G=require(script.Parent.Geometry)
 local Materials=require(script.Parent.Materials)
 local Deform=require(script.Parent.Deform)
+local SelfTest=require(script.Parent.SelfTest)
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
 local RunService=game:GetService("RunService")
@@ -22,6 +23,18 @@ local styles={}
 local materialSlots={"RailFoot","RailHead","Sleeper","RoadSurface","EdgeLine","CenterMark","Wall","FenceRail","FencePost","Pipe","Joint"}
 local materialSlot=1
 local busy=false
+local uploadArmed=false
+local uploadButton
+local unloading=false
+local loadedPivot=nil
+local loadedMeta=nil
+local loadedOutput=nil
+local draftGuides={}
+local draftNodes={}
+local function resetUpload()
+    uploadArmed=false
+    if uploadButton then uploadButton.Text="Authorize ONE mesh upload: OFF" end
+end
 local syncMaterials=function() end
 local points={}
 local preset="Rail"
@@ -71,7 +84,7 @@ local function input(key,title,value)
     fields[key]=box
     return box
 end
-local title=label("PATHFORGE   /   0.2",28)
+local title=label("PATHFORGE   /   0.3",28)
 title.Font=Enum.Font.GothamBold; title.TextSize=19
 label("01   PATH / CONTROL POINTS",22,C.muted)
 local status=label("Create a path or load a saved PathForge model.",46)
@@ -97,6 +110,7 @@ local function pathFor()
 end
 local function clearPreview()
     if preview then preview:Destroy(); preview=nil end
+    table.clear(draftGuides); table.clear(draftNodes)
 end
 local function stopMode()
     dragging=false; mode=nil
@@ -118,10 +132,14 @@ local function axisCF(a,b,up)
     if math.abs(v.Unit:Dot(up))>0.995 then up=Vector3.new(0,0,1); if math.abs(v.Unit:Dot(up))>0.995 then up=Vector3.new(1,0,0) end end
     return CFrame.lookAt((a+b)/2,b,up),v.Magnitude
 end
+-- Reuse guide instances while dragging; no repeated full-folder allocation.
 refreshPreview=function()
-    clearPreview()
-    if not widget.Enabled or RunService:IsRunning() then return end
-    preview=Instance.new("Folder"); preview.Name="_PathForgeDraft"; preview.Archivable=false; preview.Parent=workspace
+    if not widget.Enabled or RunService:IsRunning() or unloading then clearPreview(); return end
+    if not preview or preview.Parent~=workspace then
+        clearPreview()
+        preview=Instance.new("Folder"); preview.Name="_PathForgeDraft"; preview.Archivable=false; preview.Parent=workspace
+    end
+    local used=0
     if #points>=2 then
         local ok,path=pcall(pathFor)
         if ok then
@@ -129,17 +147,34 @@ refreshPreview=function()
             for i=1,n do
                 local a,b=G.at(path,path.length*(i-1)/n),G.at(path,path.length*i/n)
                 local cf,len=axisCF(a,b,Vector3.new(0,1,0))
-                if cf then local p=simplePart(preview,"Guide",cf,Vector3.new(0.10,0.10,len+0.04),Enum.Material.Neon,Color3.fromRGB(66,187,216),false); p.CanQuery=false; p.CastShadow=false end
+                if cf then
+                    used+=1
+                    local part=draftGuides[used]
+                    if not part then
+                        part=simplePart(preview,"Guide",cf,Vector3.new(0.1,0.1,len+0.04),Enum.Material.Neon,Color3.fromRGB(66,187,216),false)
+                        part.CanQuery=false; part.CastShadow=false; part.Archivable=false
+                        draftGuides[used]=part
+                    else
+                        part.CFrame=cf; part.Size=Vector3.new(0.1,0.1,len+0.04)
+                    end
+                end
             end
         end
     end
-    for i,p in ipairs(points) do
-        local node=simplePart(preview,"Node_"..i,CFrame.new(p),Vector3.new(0.65,0.65,0.65),Enum.Material.Neon,i==selected and Color3.fromRGB(255,176,79) or Color3.fromRGB(70,160,255),false)
-        node.Shape=Enum.PartType.Ball; node.CastShadow=false; node:SetAttribute("NodeIndex",i)
+    for i=#draftGuides,used+1,-1 do draftGuides[i]:Destroy(); draftGuides[i]=nil end
+    for i,pos in ipairs(points) do
+        local color=i==selected and Color3.fromRGB(255,176,79) or Color3.fromRGB(70,160,255)
+        local node=draftNodes[i]
+        if not node then
+            node=simplePart(preview,"Node_"..i,CFrame.new(pos),Vector3.new(0.65,0.65,0.65),Enum.Material.Neon,color,false)
+            node.Shape=Enum.PartType.Ball; node.CastShadow=false; node.Archivable=false
+            node:SetAttribute("NodeIndex",i); draftNodes[i]=node
+        else node.CFrame=CFrame.new(pos); node.Color=color end
     end
+    for i=#draftNodes,#points+1,-1 do draftNodes[i]:Destroy(); draftNodes[i]=nil end
 end
 local pointLabel=label("0 points",22)
-button("New path / clear draft",guarded(function() editAllowed(); stopMode(); root=nil; points={}; selected=0; styles={}; syncMaterials(); refreshLabel(); refreshPreview(); say("New draft. Existing generated models are unchanged.") end))
+button("New path / clear draft",guarded(function() editAllowed(); stopMode(); root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil; asset=nil; resetUpload(); points={}; selected=0; styles={}; syncMaterials(); refreshLabel(); refreshPreview(); say("New draft. Existing generated models are unchanged.") end))
 button("Add points in viewport",guarded(function() startMode("add") end),true)
 button("Move nodes by dragging",guarded(function() startMode("move") end))
 button("Insert node after selected",guarded(function() assert(selected>0,"Select a node first"); startMode("insert") end))
@@ -176,7 +211,7 @@ end
 local function movePoint()
     local old=points[selected]; if not old then return end
     local p=hitPosition(old.Y)
-    if p then points[selected]=p; refreshLabel(); refreshPreview() end
+    if p and (p-old).Magnitude>0.001 then points[selected]=p; refreshLabel(); refreshPreview() end
 end
 mouse.Button1Down:Connect(guarded(function()
     if not mode or not widget.Enabled or RunService:IsRunning() then return end
@@ -203,6 +238,8 @@ local function syncButtons()
     smoothButton.Text=smooth and "Curve: Smooth spline" or "Curve: Straight segments"
     collisionButton.Text=collide and "Collision: ON" or "Collision: OFF"
     assetLabel.Text=asset and ("Asset: "..asset.Name) or "Asset: none (Custom / Deform)"
+    if preset~="Deform" then resetUpload() end
+    if uploadButton then uploadButton.Visible=preset=="Deform" end
 end
 local function applyDefaults()
     for k,v in pairs(defaults[preset]) do fields[k].Text=tostring(v) end
@@ -221,15 +258,18 @@ input("yaw","Custom yaw (degrees)",0)
 input("roll","Custom roll (degrees)",0)
 assetLabel=label("Asset: none (Custom preset only)",30,C.muted)
 local function validAsset(a)
-    assert(a and a.Parent and (a:IsA("Model") or a:IsA("BasePart")),"Select a Model or BasePart")
+    assert(a and (a:IsA("Model") or a:IsA("BasePart")),"Select a Model or BasePart")
     assert(a.Archivable,"Asset must be Archivable")
+    assert(not a:IsA("Terrain"),"Terrain cannot be used as a static asset")
     local count=a:IsA("BasePart") and 1 or 0
-    for _,d in ipairs(a:GetDescendants()) do if d:IsA("BasePart") then count=count+1 end end
+    for _,d in ipairs(a:GetDescendants()) do
+        if d:IsA("BasePart") then count=count+1; assert(d.Archivable,"All source BaseParts must be Archivable") end
+    end
     assert(count>0,"Asset contains no BaseParts")
     return count
 end
 button("Use selected Model as custom asset",guarded(function()
-    editAllowed(); local a=Selection:Get()[1]; validAsset(a)
+    editAllowed(); local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
     assert(not preview or not a:IsDescendantOf(preview),"Do not use a preview node")
     asset=a; preset="Custom"; applyDefaults(); syncButtons(); say("Asset selected. A reusable snapshot is stored when generated.")
 end))
@@ -258,11 +298,20 @@ button("Reset material slot",function() styles[materialSlots[materialSlot]]=nil;
 button("Reset all material slots",function() styles={}; syncMaterials() end)
 button("Use selected MeshPart / Deform",guarded(function()
     editAllowed()
-    local a=Selection:Get()[1]; validAsset(a)
+    local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
     assert(a:IsA("MeshPart"),"Select a single MeshPart")
-    asset=a; preset="Deform"; applyDefaults(); syncButtons()
+    assert(not preview or not a:IsDescendantOf(preview),"Do not use preview objects")
+    assert(not root or not a:IsDescendantOf(root),"Use a source mesh outside the active generated path")
+    resetUpload(); asset=a; preset="Deform"; applyDefaults(); syncButtons()
     say("Deform uses the full path length, local -Z forward. Dense mesh required.")
 end))
+uploadButton=button("Authorize ONE mesh upload: OFF",guarded(function()
+    editAllowed(); assert(preset=="Deform","Only Deform needs an asset upload")
+    uploadArmed=not uploadArmed
+    uploadButton.Text=uploadArmed and "Authorize ONE mesh upload: ON" or "Authorize ONE mesh upload: OFF"
+    say(uploadArmed and "Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo." or "Mesh upload disabled.")
+end))
+uploadButton.Visible=false
 local function cloneAsset(a)
     local c=a:Clone(); assert(c,"Cannot clone asset")
     for _,d in ipairs(c:GetDescendants()) do
@@ -274,7 +323,7 @@ local steel=Color3.fromRGB(103,110,119)
 local timber=Color3.fromRGB(91,67,46)
 local asphalt=Color3.fromRGB(54,58,63)
 local concrete=Color3.fromRGB(129,130,124)
-local function build(path,o)
+local function build(path,o,source,allowUpload)
     local output=Instance.new("Folder"); output.Name="Generated"
     local count=0
     local overrides=Http:JSONDecode(o.materialStyles or "{}")
@@ -294,21 +343,23 @@ local function build(path,o)
     end
     local ok,err=pcall(function()
         if o.preset=="Deform" then
-            validAsset(asset)
-            local part=Deform.build(asset,path,o); part.Parent=output; count=1; return
+            validAsset(source)
+            assert(allowUpload,"Authorize one mesh upload before Generate (Deform only)")
+            local part=Deform.build(source,path,o,function() return not unloading and not RunService:IsRunning() end); part.Parent=output; count=1; return
         end
         if o.preset=="Custom" then
-            local per=validAsset(asset)
+            local per=validAsset(source)
             local ds=G.instances(path,o.spacing,math.floor(MAX_PARTS/per))
             for _,d in ipairs(ds) do
                 local p,f,_,u=frame(d)
-                local c=cloneAsset(asset)
+                local c=cloneAsset(source)
                 local cf=CFrame.lookAt(p,p+f,u)*CFrame.Angles(0,math.rad(o.yaw),0)*CFrame.Angles(0,0,math.rad(o.roll))
+                c.Parent=output
                 c:PivotTo(cf)
                 local function configure(part) part.Anchored=true; part.CanCollide=o.collide; part.CanTouch=false end
                 if c:IsA("BasePart") then configure(c) end
                 for _,child in ipairs(c:GetDescendants()) do if child:IsA("BasePart") then configure(child) end end
-                c.Parent=output; count=count+per
+                count=count+per
             end
             return
         end
@@ -359,57 +410,87 @@ local function build(path,o)
     if not ok then output:Destroy(); error(err,0) end
     return output,count
 end
-local function makeMeta(o,template)
+local function makeMeta(o,template,pivot)
     local meta=Instance.new("Folder"); meta.Name="PathData"
     for k,v in pairs(o) do meta:SetAttribute(k,v) end
     meta:SetAttribute("PointCount",#points)
-    for i,p in ipairs(points) do local val=Instance.new("Vector3Value"); val.Name=string.format("P%03d",i); val.Value=p; val.Parent=meta end
+    meta:SetAttribute("CoordinateSpace","Local")
+    for i,pos in ipairs(points) do local val=Instance.new("Vector3Value"); val.Name=string.format("P%03d",i); val.Value=pivot:PointToObjectSpace(pos); val.Parent=meta end
     local ref=Instance.new("ObjectValue"); ref.Name="Asset"; ref.Value=template; ref.Parent=meta
     return meta
 end
-local function commit()
+local function commit(allowUpload)
     editAllowed(); stopMode()
     local o=options(); local path=pathFor()
-    assert(not root or (root:IsDescendantOf(workspace) and root:GetAttribute("PathForgeSchema")==1),"Saved path no longer exists; load again or create a new path")
-    if root then assert(root:FindFirstChild("Generated") and root:FindFirstChild("PathData"),"PathForge data is missing; load or create a new path") end
-    local output,count=build(path,o)
-    local template=nil; local pending=nil
-    if o.preset=="Custom" or o.preset=="Deform" then
-        local library=Storage:FindFirstChild("PathForgeAssets")
-        if library and asset:IsDescendantOf(library) then template=asset else
-            local ok,result=pcall(cloneAsset,asset)
-            if not ok then output:Destroy(); error(result,0) end
-            pending=result; pending.Name=asset.Name.."_"..Http:GenerateGUID(false):sub(1,8); template=pending
+    local target=root
+    local pivot=target and target:GetPivot() or CFrame.new(points[1])
+    local oldGenerated,oldMeta
+    local function checkTarget()
+        assert(not unloading and not RunService:IsRunning(),"Editor closed or play testing started")
+        if target then
+            assert(target:IsDescendantOf(workspace) and target:GetAttribute("PathForgeSchema")==1,"Saved path no longer exists")
+            assert(target:FindFirstChild("Generated")==loadedOutput and target:FindFirstChild("PathData")==loadedMeta,"Path changed externally; reload before generating")
+            assert(target:GetPivot()==loadedPivot,"Path was moved; reload it before generating")
         end
     end
-    if RunService:IsRunning() then output:Destroy(); if pending then pending:Destroy() end; error("Stop play testing and regenerate") end
-    local meta=makeMeta(o,template)
-    local recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
-    if not recording then output:Destroy(); meta:Destroy(); if pending then pending:Destroy() end; error("Cannot start Studio undo recording. Try again.") end
-    local target=root
-    local oldGenerated,oldMeta
-    local createdLibrary=nil
+    checkTarget()
+    local source=asset
+    local output,meta,pending,createdLibrary,recording
+    local count
+    local createdTarget=false
     local success,err=pcall(function()
+        local template
+        if o.preset=="Custom" or o.preset=="Deform" then
+            validAsset(source); assert(source.Parent,"Source asset was removed")
+            assert(not target or not source:IsDescendantOf(target),"Choose a source outside the active generated path")
+            local library=Storage:FindFirstChild("PathForgeAssets")
+            if library then assert(library:IsA("Folder"),"PathForgeAssets must be a Folder") end
+            if library and source:IsDescendantOf(library) then template=source else
+                pending=cloneAsset(source)
+                pending.Name=source.Name.."_"..Http:GenerateGUID(false):sub(1,8)
+                template=pending
+            end
+        end
+        output,count=build(path,o,template or source,allowUpload)
+        checkTarget()
+        meta=makeMeta(o,template,pivot)
+        recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
+        assert(recording,"Cannot start Studio undo recording. Try again.")
         if pending then
             local lib=Storage:FindFirstChild("PathForgeAssets")
             if not lib then lib=Instance.new("Folder"); lib.Name="PathForgeAssets"; lib.Parent=Storage; createdLibrary=lib end
-            assert(lib:IsA("Folder"),"ServerStorage.PathForgeAssets must be a Folder")
+            assert(lib:IsA("Folder"),"PathForgeAssets must be a Folder")
             pending.Parent=lib
         end
-        if not target then target=Instance.new("Model"); target.Name="PF_"..o.preset; target:SetAttribute("PathForgeSchema",1)
-        else oldGenerated=target:FindFirstChild("Generated"); oldMeta=target:FindFirstChild("PathData"); oldGenerated.Parent=nil; oldMeta.Parent=nil end
+        if not target then
+            target=Instance.new("Model"); createdTarget=true
+            target.Name="PF_"..o.preset; target:SetAttribute("PathForgeSchema",1)
+            target.WorldPivot=pivot
+        else
+            oldGenerated=target:FindFirstChild("Generated"); oldMeta=target:FindFirstChild("PathData")
+            oldGenerated.Parent=nil; oldMeta.Parent=nil
+            target.WorldPivot=pivot
+        end
         output.Parent=target; meta.Parent=target
-        if not root then target.Parent=workspace end
+        if createdTarget then target.Parent=workspace end
+        History:FinishRecording(recording,Enum.FinishRecordingOperation.Commit)
+        recording=nil
+        root=target; loadedPivot=target:GetPivot(); loadedMeta=meta; loadedOutput=output
+        if template then asset=template end
     end)
     if not success then
-        output:Destroy(); meta:Destroy(); if pending then pending:Destroy() end; if createdLibrary then createdLibrary:Destroy() end
-        if not root and target then target:Destroy() end
-        if root and oldGenerated then oldGenerated.Parent=root end; if root and oldMeta then oldMeta.Parent=root end
-        History:FinishRecording(recording,Enum.FinishRecordingOperation.Cancel); error(err,0)
+        if output then output:Destroy() end
+        if meta then meta:Destroy() end
+        if pending then pending:Destroy() end
+        if createdLibrary then createdLibrary:Destroy() end
+        if createdTarget and target then target:Destroy() end
+        if not createdTarget and target then
+            if oldGenerated then oldGenerated.Parent=target end
+            if oldMeta then oldMeta.Parent=target end
+        end
+        if recording then pcall(function() History:FinishRecording(recording,Enum.FinishRecordingOperation.Cancel) end) end
+        error(err,0)
     end
-    History:FinishRecording(recording,Enum.FinishRecordingOperation.Commit)
-    -- Detached prior objects are left for Studio history, with no Workspace presence.
-    root=target; if template then asset=template end
     Selection:Set({root}); refreshLabel(); syncButtons(); refreshPreview()
     say(string.format("Generated %d parts | %.1f studs. Saved path can be reloaded.",count,path.length))
 end
@@ -421,9 +502,9 @@ local function loadSelected()
     local meta=s:FindFirstChild("PathData"); assert(meta and s:FindFirstChild("Generated"),"Missing saved path data")
     local n=meta:GetAttribute("PointCount"); assert(type(n)=="number" and n>=2 and n<=MAX_POINTS,"Invalid saved point count")
     local pp={}
-    for i=1,n do local v=meta:FindFirstChild(string.format("P%03d",i)); assert(v and v:IsA("Vector3Value"),"Missing control point"); pp[i]=v.Value end
+    for i=1,n do local v=meta:FindFirstChild(string.format("P%03d",i)); assert(v and v:IsA("Vector3Value"),"Missing control point"); pp[i]=meta:GetAttribute("CoordinateSpace")=="Local" and s:GetPivot():PointToWorldSpace(v.Value) or v.Value end
     local pr=meta:GetAttribute("preset"); assert(table.find(presets,pr),"Unknown preset")
-    root=s; points=pp; selected=1; preset=pr; smooth=meta:GetAttribute("smooth")==true; collide=meta:GetAttribute("collide")==true
+    resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated"); points=pp; selected=1; preset=pr; smooth=meta:GetAttribute("smooth")==true; collide=meta:GetAttribute("collide")==true
     for _,k in ipairs({"width","height","spacing","step","offset","yaw","roll"}) do local v=meta:GetAttribute(k); if type(v)=="number" then fields[k].Text=tostring(v) end end
     local ref=meta:FindFirstChild("Asset"); asset=ref and ref:IsA("ObjectValue") and ref.Value or nil
     local saved=meta:GetAttribute("materialStyles"); styles=type(saved)=="string" and Http:JSONDecode(saved) or {}; syncMaterials()
@@ -431,22 +512,25 @@ local function loadSelected()
 end
 label("03   BUILD / SAVED PATHS",22,C.muted)
 button("Generate / update saved path",guarded(function()
+    local authorized=uploadArmed
+    resetUpload()
     busy=true
-    local ok,err=pcall(commit)
+    local ok,err=pcall(commit,authorized)
     busy=false
     if not ok then error(err,0) end
 end),true)
 button("Load selected saved path",guarded(loadSelected))
+button("Run geometry self-tests",guarded(function() editAllowed(); local n=SelfTest.run(); say(tostring(n).." geometry tests passed") end))
 button("Hide draft guides",function() stopMode(); clearPreview(); say("Guides hidden. Draft retained.") end)
 button("Show draft guides",guarded(function() editAllowed(); refreshPreview() end))
 label("Custom repeats source models; Deform bends one static MeshPart. Material slots affect built-in geometry. Generate commits; draft edits do not.",72,C.muted)
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
     tool:SetActive(widget.Enabled)
-    if widget.Enabled then refreshPreview() else stopMode(); clearPreview() end
+    if widget.Enabled then refreshPreview() else resetUpload(); stopMode(); clearPreview() end
 end)
 local runConnection=RunService.Heartbeat:Connect(function()
-    if RunService:IsRunning() and (preview or mode) then stopMode(); clearPreview() end
+    if RunService:IsRunning() and (preview or mode or uploadArmed) then resetUpload(); stopMode(); clearPreview() end
 end)
 tool.Click:Connect(function() widget.Enabled=not widget.Enabled end)
-plugin.Unloading:Connect(function() stopMode(); clearPreview(); runConnection:Disconnect() end)
+plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); runConnection:Disconnect() end)
 syncButtons(); syncMaterials(); refreshLabel(); if widget.Enabled then refreshPreview() end

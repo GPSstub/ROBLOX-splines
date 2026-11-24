@@ -1,8 +1,12 @@
 # Studio acceptance checklist (not executed)
-- Install local plugin in empty baseplate. Create three non-collinear points, generate each preset, load and update.
-- Capture two different BaseParts into RailHead and Sleeper. Verify MaterialVariant and texture tiling, save/reopen and regenerate; reset one slot.
-- Repeat a MeshPart with SurfaceAppearance, and a multi-part model; verify visual properties and no copied scripts.
-- Deform a subdivided straight static mesh with PBR, then generate an S-curve. Verify UVs, normals, collision, offset and roll, and source unchanged.
-- Save place, close/reopen, verify opaque mesh and material maps persist. If unavailable or permissions fail, verify previous generated path is untouched.
-- Undo/redo after build and regeneration; test old v0.1 path data, missing source, invalid parameters, vertical paths, and close plugin during preview.
-- Compare output to straight source and reference environment before production deployment.
+
+- Install local plugin in empty baseplate and click Run geometry self-tests (8 cases).
+- Generate each built-in preset and Custom, save/reopen, load and update.
+- Capture two materials, including a MaterialVariant and tiled texture. Reset one slot.
+- Move and rotate a generated model, reload its path, regenerate; check local coordinates. Try generating after external move/undo without reload; expect rejection.
+- Verify guide instances are reused while dragging, and removed when closing the plugin or starting play.
+- Deform a permitted dense static MeshPart. Generate without authorization: expect rejection and no upload. Authorize one upload, generate, check asset ID and source unchanged. Verify authorization resets.
+- Save/reopen and test mesh asset access, texture/PBR, normals and collision. Test with a group-owned place and asset permissions.
+- Trigger failure (invalid asset, unavailable mesh API, history unavailable); old output must remain. An already uploaded mesh may remain on Roblox even if subsequent steps fail.
+- Test undo/redo and reload, v0.1/v0.2 metadata migration, missing source, sharp curves and vertical paths.
+- Compare visual output against reference assets before production deployment.

@@ -13,6 +13,9 @@
     },
     "Deform": {
       "$path": "src/Deform.lua"
+    },
+    "SelfTest": {
+      "$path": "src/SelfTest.lua"
     }
   }
 }

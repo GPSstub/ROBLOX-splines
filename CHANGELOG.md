@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3 — 2026-11-24
+
+### Changed
+- Deform requires one-shot explicit authorization and creates an asset-backed mesh rather than ephemeral content.
+- Parallel-transport spline frames reduce orientation flips near vertical tangents.
+- Draft guide and node instances are reused during edits.
+- New path metadata stores model-local control points; old world-space metadata remains readable.
+- Build staging, stale-target checks and cleanup protect previous output during errors.
+- Added an eight-case in-Studio geometry self-test command (not yet executed).
+
+### Known issues
+- Asset uploads require a local plugin and appropriate permissions; moderation/access and save/reopen are unverified. Undo cannot undo the upload itself.
+- Continuous extrusion, adaptive subdivision and UV tiling remain pending.
+
 ## v0.2 — 2026-11-24
 
 ### Added
