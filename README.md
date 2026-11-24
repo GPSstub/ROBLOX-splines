@@ -2,6 +2,16 @@
 
 Studio-only procedural level design toolkit. No runtime scripts, HTTP requests, or automatic asset uploads.
 
+## Development update — November 24, 2026
+
+**v0.2 · Early development**
+
+PathForge is evolving from a spline-based preset generator into a general-purpose environment toolkit. This update adds user-defined material slots and experimental mesh bending, so creators can build with their own assets rather than rely on preset materials.
+
+Next up: Studio stability testing, continuous mesh extrusion, improved UV mapping, and a reusable asset library. The goal is to make building roads, tunnels, walls, pipes and other environments faster without sacrificing visual quality.
+
+[Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Testing](TESTING.md)
+
 ## Install
 Download `PathForge.rbxmx` from this repository, insert it into an empty Studio place, right-click the model in Explorer and Save as Local Plugin. Open Plugins > PathForge. Alternatively use Rojo 7: `rojo build -o PathForge.rbxmx`.
 
