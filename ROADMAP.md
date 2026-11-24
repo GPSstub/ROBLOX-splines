@@ -1,18 +1,18 @@
 # Roadmap
 
-## v0.4 geometry preview
-- [x] Continuous profile extrusion
-- [x] Adaptive path sampling and distance-based UV coordinates
-- [x] Temporary mesh preview separated from asset upload
-- [x] Geometry budgets, selectable collision fidelity
-- [ ] Studio execution and save/reopen verification
-- [ ] Live mesh preview and round-profile normal smoothing
-- [ ] Imported mesh subdivision and mesh chunking
+## v0.5 editor preview
+- [x] Tabbed editor, direct preset selection
+- [x] Optional axis movement handles
+- [x] Repeat overlays and saved layer configuration
+- [x] Debounced automatic mesh/overlay preview
+- [x] Smooth round-profile normals
+- [ ] Execute Studio self-tests and acceptance checklist
 
 ## Next
-- [ ] Viewport handles and context-aware inspector
-- [ ] Layered spline generation (multiple generators on a single path)
-- [ ] Asset/material libraries and mesh caching
-- [ ] Scatter, brush placement and terrain-aware editing
+- [ ] General multi-generator layers, including multiple mesh sweeps
+- [ ] Asset/material library UI and reusable recipes
+- [ ] Mesh caching, chunking, imported mesh subdivision
+- [ ] Full preview coverage and improved gizmos
+- [ ] Scatter, brush placement, terrain-aware editing
 
-No release dates are committed.
+No release dates are committed. Studio testing is a release blocker.

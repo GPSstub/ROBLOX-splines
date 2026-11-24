@@ -1,6 +1,6 @@
 # Studio acceptance checklist (not executed)
 
-- Install local plugin in empty baseplate and click Run geometry self-tests (13 cases).
+- Install local plugin in empty baseplate and click Run geometry self-tests (15 cases).
 - Generate each built-in preset and Custom, save/reopen, load and update.
 - Capture two materials, including a MaterialVariant and tiled texture. Reset one slot.
 - Move and rotate a generated model, reload its path, regenerate; check local coordinates. Try generating after external move/undo without reload; expect rejection.
@@ -17,3 +17,11 @@
 - Preview both mesh modes: no upload, no collision, removed on edit, close or play. Generate without authorization must fail.
 - Upload one mesh after explicit authorization. Verify owner, asset ID, save/reopen, collision fidelity and previous output after failure.
 - Confirm open arch is double-sided and non-collidable, including after upload. Test tight curves for self-intersection.
+
+## v0.5 editor acceptance (not executed)
+- Switch between four tabs, select each generator directly, verify fields and status. Move nodes with axis handles and fallback surface drag; verify grid snapping and cleanup.
+- Add two repeat layers with different assets, side/height and spacing. Toggle one off, apply settings, preview, generate, save/reopen, load and regenerate.
+- Confirm base + layer part budget is enforced, source snapshots preserved, missing sources reported, and disabled missing sources tolerated.
+- Enable auto preview, drag a node, change a field, switch preset, close/reopen while mesh generation yields. Verify stale previews never appear and no upload occurs.
+- Arm one upload with auto preview enabled: auto must stop, authorization must not be consumed by background preview; Generate must require a fresh authorization for every mesh upload.
+- Inspect circle and arch normals and seams; compare cap winding, smooth sides and rectangular corners.

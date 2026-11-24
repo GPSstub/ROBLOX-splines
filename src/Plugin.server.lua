@@ -1,9 +1,10 @@
--- PathForge v0.4 | Studio-only path editor. Mesh uploads are explicit.
+-- PathForge v0.5 | Studio-only path editor. Mesh uploads are explicit.
 if not plugin then return end
 local G=require(script.Parent.Geometry)
 local Materials=require(script.Parent.Materials)
 local Deform=require(script.Parent.Deform)
 local Extrude=require(script.Parent.Extrude)
+local Layers=require(script.Parent.Layers)
 local SelfTest=require(script.Parent.SelfTest)
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -32,9 +33,25 @@ local loadedMeta=nil
 local loadedOutput=nil
 local draftGuides={}
 local draftNodes={}
-local meshPreview,previewEditable
+local meshPreview,previewEditable,layerPreview
+local repeatLayers={}
+local layerIndex=0
+local syncLayers=function() end
+local liveEnabled=false
+local previewBusy=false
+local previewRevision=0
+local previewDue=nil
+local liveButton
+local function setLive(enabled)
+    liveEnabled=enabled
+    previewDue=enabled and os.clock()+0.35 or nil
+    if liveButton then liveButton.Text=enabled and "Auto preview: ON" or "Auto preview: OFF" end
+end
 local fidelity="Default"
 local function clearMeshPreview()
+    previewRevision+=1
+    if liveEnabled then previewDue=os.clock()+0.35 end
+    if layerPreview then layerPreview:Destroy(); layerPreview=nil end
     if meshPreview then meshPreview:Destroy(); meshPreview=nil end
     if previewEditable then previewEditable:Destroy(); previewEditable=nil end
 end
@@ -55,6 +72,7 @@ local mode=nil
 local dragging=false
 local lastMove=0
 local refreshPreview
+local syncHandles=function() end
 local refreshLabel
 local syncButtons=function() end
 local MAX_PARTS=6500
@@ -70,10 +88,26 @@ local scroll=make("ScrollingFrame",widget,{Size=UDim2.fromScale(1,1),BackgroundC
 make("UIPadding",scroll,{PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)})
 make("UIListLayout",scroll,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
 local order=0
+local currentSection=nil
+local activeSection="Path"
+local sectionItems={}
+local sectionButtons={}
+local function selectSection(name)
+    activeSection=name
+    for section,items in pairs(sectionItems) do
+        for _,obj in ipairs(items) do obj.Visible=section==name end
+    end
+    for section,b in pairs(sectionButtons) do b.BackgroundColor3=section==name and C.accent or C.panel end
+end
 local function item(class,props)
     order=order+1
     props.LayoutOrder=order
-    return make(class,scroll,props)
+    local obj=make(class,scroll,props)
+    if currentSection then
+        sectionItems[currentSection]=sectionItems[currentSection] or {}
+        table.insert(sectionItems[currentSection],obj); obj.Visible=currentSection==activeSection
+    end
+    return obj
 end
 local function label(text,h,color)
     return item("TextLabel",{Size=UDim2.new(1,0,0,h or 22),BackgroundTransparency=1,Text=text,TextColor3=color or C.text,Font=Enum.Font.Gotham,TextSize=13,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
@@ -92,10 +126,17 @@ local function input(key,title,value)
     fields[key]=box
     return box
 end
-local title=label("PATHFORGE   /   0.4",28)
+local title=label("PATHFORGE   /   0.5",28)
 title.Font=Enum.Font.GothamBold; title.TextSize=19
-label("01   PATH / CONTROL POINTS",22,C.muted)
+local nav=item("Frame",{Size=UDim2.new(1,0,0,32),BackgroundTransparency=1})
+for i,name in ipairs({"Path","Shape","Layers","Build"}) do
+    local b=make("TextButton",nav,{Position=UDim2.new((i-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=name,TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
+    make("UICorner",b,{CornerRadius=UDim.new(0,4)}); sectionButtons[name]=b
+    b.Activated:Connect(function() selectSection(name); scroll.CanvasPosition=Vector2.zero end)
+end
 local status=label("Create a path or load a saved PathForge model.",46)
+currentSection="Path"
+label("01   PATH / CONTROL POINTS",22,C.muted)
 local function say(t,err) status.Text=t; status.TextColor3=err and C.error or C.text end
 local function guarded(fn)
     return function(...)
@@ -117,16 +158,16 @@ local function pathFor()
     local path=G.path(points,smooth); path.linear=not smooth; return path
 end
 local function clearPreview()
-    clearMeshPreview()
+    setLive(false); clearMeshPreview()
     if preview then preview:Destroy(); preview=nil end
-    table.clear(draftGuides); table.clear(draftNodes)
+    table.clear(draftGuides); table.clear(draftNodes); syncHandles()
 end
 local function stopMode()
-    dragging=false; mode=nil
+    dragging=false; mode=nil; syncHandles()
     if plugin:IsActivated() then plugin:Deactivate() end
 end
 local function startMode(m)
-    editAllowed(); mode=m; plugin:Activate(true); say(m=="add" and "Click surfaces to add points. Switch to Move to drag nodes." or (m=="insert" and "Click a surface to insert a node after the selected node." or "Drag a blue node. Use coordinate fields for exact XYZ."))
+    editAllowed(); mode=m; plugin:Activate(true); syncHandles(); say(m=="add" and "Click surfaces to add points. Switch to Move to drag nodes." or (m=="insert" and "Click a surface to insert a node after the selected node." or "Drag a blue node. Use coordinate fields for exact XYZ."))
 end
 local function simplePart(parent,name,cf,size,material,color,canCollide)
     local p=Instance.new("Part")
@@ -146,7 +187,7 @@ refreshPreview=function()
     clearMeshPreview()
     if not widget.Enabled or RunService:IsRunning() or unloading then clearPreview(); return end
     if not preview or preview.Parent~=workspace then
-        clearPreview()
+        if preview then preview:Destroy() end; table.clear(draftGuides); table.clear(draftNodes)
         preview=Instance.new("Folder"); preview.Name="_PathForgeDraft"; preview.Archivable=false; preview.Parent=workspace
     end
     local used=0
@@ -182,9 +223,10 @@ refreshPreview=function()
         else node.CFrame=CFrame.new(pos); node.Color=color end
     end
     for i=#draftNodes,#points+1,-1 do draftNodes[i]:Destroy(); draftNodes[i]=nil end
+    syncHandles()
 end
 local pointLabel=label("0 points",22)
-button("New path / clear draft",guarded(function() editAllowed(); stopMode(); root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil; asset=nil; resetUpload(); points={}; selected=0; styles={}; syncMaterials(); syncButtons(); refreshLabel(); refreshPreview(); say("New draft. Existing generated models are unchanged.") end))
+button("New path / clear draft",guarded(function() editAllowed(); stopMode(); root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil; asset=nil; repeatLayers={}; layerIndex=0; syncLayers(); resetUpload(); points={}; selected=0; styles={}; syncMaterials(); syncButtons(); refreshLabel(); refreshPreview(); say("New draft. Existing generated models are unchanged.") end))
 button("Add points in viewport",guarded(function() startMode("add") end),true)
 button("Move nodes by dragging",guarded(function() startMode("move") end))
 button("Insert node after selected",guarded(function() assert(selected>0,"Select a node first"); startMode("insert") end))
@@ -218,13 +260,14 @@ local function hitPosition(planeY)
     if grid>0 then p=Vector3.new(math.floor(p.X/grid+0.5)*grid,math.floor(p.Y/grid+0.5)*grid,math.floor(p.Z/grid+0.5)*grid) end
     return p
 end
+local axisHandles,axisStart,axisNode
 local function movePoint()
     local old=points[selected]; if not old then return end
     local p=hitPosition(old.Y)
     if p and (p-old).Magnitude>0.001 then points[selected]=p; refreshLabel(); refreshPreview() end
 end
 mouse.Button1Down:Connect(guarded(function()
-    if not mode or not widget.Enabled or RunService:IsRunning() then return end
+    if axisStart or not mode or not widget.Enabled or RunService:IsRunning() then return end
     local target=mouse.Target
     if target and preview and target.Parent==preview and target:GetAttribute("NodeIndex") then
         selected=target:GetAttribute("NodeIndex"); dragging=mode=="move"; refreshLabel(); refreshPreview(); return
@@ -240,23 +283,64 @@ mouse.Button1Down:Connect(guarded(function()
 end))
 mouse.Move:Connect(guarded(function() if dragging and os.clock()-lastMove>0.05 then lastMove=os.clock(); movePoint() end end))
 mouse.Button1Up:Connect(guarded(function() if dragging then dragging=false; movePoint() end end))
-plugin.Deactivation:Connect(function() mode=nil; dragging=false end)
+plugin.Deactivation:Connect(function() mode=nil; dragging=false; axisStart=nil; syncHandles() end)
+do
+    local ok,err=pcall(function()
+        axisHandles=Instance.new("Handles")
+        axisHandles.Name="PathForgeAxisHandles"; axisHandles.Style=Enum.HandlesStyle.Movement
+        axisHandles.Faces=Faces.new(Enum.NormalId.Right,Enum.NormalId.Left,Enum.NormalId.Top,Enum.NormalId.Bottom,Enum.NormalId.Front,Enum.NormalId.Back)
+        axisHandles.Color3=Color3.fromRGB(83,185,234); axisHandles.Visible=false
+        axisHandles.Parent=game:GetService("CoreGui")
+        syncHandles=function()
+            local node=widget.Enabled and mode=="move" and draftNodes[selected] or nil
+            if not node then axisStart=nil; axisNode=nil end
+            axisHandles.Adornee=node; axisHandles.Visible=node~=nil
+        end
+        axisHandles.MouseButton1Down:Connect(guarded(function()
+            if mode~="move" or not points[selected] then return end
+            dragging=false; axisNode=selected; axisStart=points[selected]
+        end))
+        axisHandles.MouseDrag:Connect(guarded(function(face,distance)
+            if not axisStart or not axisNode or not points[axisNode] then return end
+            local grid=number("grid",0,100)
+            if grid>0 then distance=math.floor(distance/grid+0.5)*grid end
+            points[axisNode]=axisStart+Vector3.FromNormalId(face)*distance
+            refreshLabel(); refreshPreview()
+        end))
+        axisHandles.MouseButton1Up:Connect(function() axisStart=nil; axisNode=nil end)
+    end)
+    if not ok then if axisHandles then axisHandles:Destroy(); axisHandles=nil end; syncHandles=function() end; warn("[PathForge] Axis handles unavailable:",err) end
+end
+currentSection="Shape"
 label("02   GENERATOR / PARAMETERS",22,C.muted)
 local presetButton,smoothButton,collisionButton,assetLabel
+local presetChoices={}
 syncButtons=function()
-    presetButton.Text="Preset: "..preset.."   >"
+    presetButton.Text="Generator: "..preset
+    for name,b in pairs(presetChoices) do b.BackgroundColor3=name==preset and C.accent or C.panel end
     smoothButton.Text=smooth and "Curve: Smooth spline" or "Curve: Straight segments"
     collisionButton.Text=collide and "Collision: ON" or "Collision: OFF"
     assetLabel.Text=asset and ("Asset: "..asset.Name) or "Asset: none (Custom / Deform)"
     if preset~="Deform" and preset~="Extrude" then resetUpload() end
-    if uploadButton then uploadButton.Visible=preset=="Deform" or preset=="Extrude" end
+    -- Upload authorization is in Build, always visible when that tab is selected.
 end
 local function applyDefaults()
     for k,v in pairs(defaults[preset]) do fields[k].Text=tostring(v) end
 end
-presetButton=button("Preset: Rail",function()
-    local idx=table.find(presets,preset) or 1; preset=presets[idx%#presets+1]; if preset=="Extrude" then asset=nil end; resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
-end,true)
+presetButton=label("Generator: Rail",24)
+for row=0,1 do
+    local panel=item("Frame",{Size=UDim2.new(1,0,0,29),BackgroundTransparency=1})
+    for col=1,4 do
+        local name=presets[row*4+col]
+        local b=make("TextButton",panel,{Position=UDim2.new((col-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=name,TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
+        make("UICorner",b,{CornerRadius=UDim.new(0,4)}); presetChoices[name]=b
+        b.Activated:Connect(function()
+            if busy or preset==name then return end
+            preset=name; if name=="Extrude" then asset=nil end
+            resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
+        end)
+    end
+end
 smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
 collisionButton=button("Collision: ON",function() collide=not collide; clearMeshPreview(); syncButtons() end)
 input("width","Width / rail gauge / diameter",3.2)
@@ -328,13 +412,6 @@ button("Use selected MeshPart / Deform",guarded(function()
     clearMeshPreview(); resetUpload(); asset=a; preset="Deform"; applyDefaults(); syncButtons()
     say("Deform uses the full path length, local -Z forward. Dense mesh required.")
 end))
-uploadButton=button("Authorize ONE mesh upload: OFF",guarded(function()
-    editAllowed(); assert(preset=="Deform" or preset=="Extrude","Only mesh generators need an asset upload")
-    uploadArmed=not uploadArmed
-    uploadButton.Text=uploadArmed and "Authorize ONE mesh upload: ON" or "Authorize ONE mesh upload: OFF"
-    say(uploadArmed and "Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo." or "Mesh upload disabled.")
-end))
-uploadButton.Visible=false
 button("Use selected MeshPart appearance / Extrude",guarded(function()
     editAllowed(); local a=Selection:Get()[1]; validAsset(a)
     assert(a:IsA("MeshPart") and a.Parent,"Select a MeshPart with PBR appearance")
@@ -346,6 +423,47 @@ end))
 button("Clear source / use Extrude material slot",guarded(function()
     asset=nil; preset="Extrude"; resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
 end))
+currentSection="Layers"
+label("03   REPEAT LAYERS / SHARED PATH",22,C.muted)
+local layerTitle=label("No repeat layers",42)
+input("layerSpacing","Spacing (studs)",5)
+input("layerSide","Lateral offset (studs)",0)
+input("layerHeight","Local height offset",0)
+input("layerYaw","Yaw (degrees)",0)
+input("layerRoll","Roll (degrees)",0)
+local enabledButton,layerCollisionButton
+syncLayers=function()
+    local l=repeatLayers[layerIndex]
+    layerTitle.Text=l and string.format("%d / %d  |  %s",layerIndex,#repeatLayers,l.source and l.source.Name or "Missing source") or "No repeat layers"
+    if l then
+        for k,v in pairs({layerSpacing=l.spacing,layerSide=l.side,layerHeight=l.height,layerYaw=l.yaw,layerRoll=l.roll}) do fields[k].Text=tostring(v) end
+    end
+    if enabledButton then enabledButton.Text=l and (l.enabled and "Layer enabled: ON" or "Layer enabled: OFF") or "Layer enabled: —" end
+    if layerCollisionButton then layerCollisionButton.Text=l and (l.collide and "Layer collision: ON" or "Layer collision: OFF") or "Layer collision: —" end
+end
+button("Add selected model as repeat layer",guarded(function()
+    editAllowed(); local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
+    assert(not preview or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
+    assert(not root or (a~=root and not a:IsDescendantOf(root)),"Do not use the active generated path")
+    assert(#repeatLayers<Layers.MAX_LAYERS,"Maximum 12 repeat layers")
+    repeatLayers[#repeatLayers+1]={source=a,spacing=5,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true}
+    layerIndex=#repeatLayers; syncLayers(); clearMeshPreview()
+end),true)
+button("Previous layer",function() if #repeatLayers>0 then layerIndex=(layerIndex-2)%#repeatLayers+1; syncLayers() end end)
+button("Next layer",function() if #repeatLayers>0 then layerIndex=layerIndex%#repeatLayers+1; syncLayers() end end)
+button("Apply layer settings",guarded(function()
+    local l=assert(repeatLayers[layerIndex],"Select a layer")
+    local nextLayer=table.clone(l)
+    nextLayer.spacing=number("layerSpacing",0.2,200); nextLayer.side=number("layerSide",-1000,1000)
+    nextLayer.height=number("layerHeight",-1000,1000); nextLayer.yaw=number("layerYaw",-360,360); nextLayer.roll=number("layerRoll",-360,360)
+    Layers.validate(nextLayer); repeatLayers[layerIndex]=nextLayer; clearMeshPreview(); say("Layer settings applied to draft.")
+end),true)
+enabledButton=button("Layer enabled: —",function() local l=repeatLayers[layerIndex]; if l then l.enabled=not l.enabled; syncLayers(); clearMeshPreview() end end)
+layerCollisionButton=button("Layer collision: —",function() local l=repeatLayers[layerIndex]; if l then l.collide=not l.collide; syncLayers(); clearMeshPreview() end end)
+button("Remove selected layer",guarded(function()
+    if repeatLayers[layerIndex] then table.remove(repeatLayers,layerIndex); layerIndex=math.min(layerIndex,#repeatLayers); syncLayers(); clearMeshPreview() end
+end))
+label("Each layer repeats its own source model along the same spline. Apply layer settings before preview or generation.",58,C.muted)
 local function cloneAsset(a)
     local c=a:Clone(); assert(c,"Cannot clone asset")
     for _,d in ipairs(c:GetDescendants()) do
@@ -449,13 +567,14 @@ local function build(path,o,source,allowUpload)
     if not ok then output:Destroy(); error(err,0) end
     return output,count
 end
-local function makeMeta(o,template,pivot)
+local function makeMeta(o,template,pivot,savedLayers)
     local meta=Instance.new("Folder"); meta.Name="PathData"
     for k,v in pairs(o) do meta:SetAttribute(k,v) end
     meta:SetAttribute("PointCount",#points)
     meta:SetAttribute("CoordinateSpace","Local")
     for i,pos in ipairs(points) do local val=Instance.new("Vector3Value"); val.Name=string.format("P%03d",i); val.Value=pivot:PointToObjectSpace(pos); val.Parent=meta end
     local ref=Instance.new("ObjectValue"); ref.Name="Asset"; ref.Value=template; ref.Parent=meta
+    Layers.write(meta,savedLayers)
     return meta
 end
 local function commit(allowUpload)
@@ -474,32 +593,50 @@ local function commit(allowUpload)
     end
     checkTarget()
     local source=(o.preset=="Custom" or o.preset=="Deform" or o.preset=="Extrude") and asset or nil
-    local output,meta,pending,createdLibrary,recording
+    local output,meta,createdLibrary,recording
+    local pending={}
+    local snapshots={}
+    local savedLayers={}
+    local overlays
     local count
     local createdTarget=false
     local success,err=pcall(function()
-        local template
-        if o.preset=="Custom" or o.preset=="Deform" or (o.preset=="Extrude" and source) then
-            validAsset(source); assert(source.Parent,"Source asset was removed")
-            assert(not target or not source:IsDescendantOf(target),"Choose a source outside the active generated path")
-            local library=Storage:FindFirstChild("PathForgeAssets")
-            if library then assert(library:IsA("Folder"),"PathForgeAssets must be a Folder") end
-            if library and source:IsDescendantOf(library) then template=source else
-                pending=cloneAsset(source)
-                pending.Name=source.Name.."_"..Http:GenerateGUID(false):sub(1,8)
-                template=pending
-            end
+        local library=Storage:FindFirstChild("PathForgeAssets")
+        if library then assert(library:IsA("Folder"),"PathForgeAssets must be a Folder") end
+        local function snapshot(a)
+            validAsset(a); assert(a.Parent,"Source asset was removed")
+            assert(not target or (a~=target and not a:IsDescendantOf(target)),"Choose a source outside the active generated path")
+            assert(not preview or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
+            if library and a:IsDescendantOf(library) then return a end
+            if snapshots[a] then return snapshots[a] end
+            local clone=cloneAsset(a)
+            clone.Name=a.Name.."_"..Http:GenerateGUID(false):sub(1,8)
+            pending[#pending+1]=clone; snapshots[a]=clone
+            return clone
         end
+        local template
+        if o.preset=="Custom" or o.preset=="Deform" or (o.preset=="Extrude" and source) then template=snapshot(source) end
+        for i,l in ipairs(repeatLayers) do
+            local copy=table.clone(l)
+            if l.source then copy.source=snapshot(l.source) else assert(not l.enabled,"Enabled layer has a missing source") end
+            savedLayers[i]=copy
+        end
+        local layerCount
+        overlays,layerCount=Layers.build(path,savedLayers,validAsset,cloneAsset,MAX_PARTS,false)
+        -- A mesh generator uses exactly one part. Preflight overlay budget before upload.
+        if o.preset=="Extrude" or o.preset=="Deform" then assert(layerCount<MAX_PARTS,"No budget left for base mesh") end
         output,count=build(path,o,template or source,allowUpload)
+        assert(count+layerCount<=MAX_PARTS,"Combined base and layer budget exceeded")
+        overlays.Parent=output; count+=layerCount
         checkTarget()
-        meta=makeMeta(o,template,pivot)
+        meta=makeMeta(o,template,pivot,savedLayers)
         recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
         assert(recording,"Cannot start Studio undo recording. Try again.")
-        if pending then
+        if #pending>0 then
             local lib=Storage:FindFirstChild("PathForgeAssets")
             if not lib then lib=Instance.new("Folder"); lib.Name="PathForgeAssets"; lib.Parent=Storage; createdLibrary=lib end
             assert(lib:IsA("Folder"),"PathForgeAssets must be a Folder")
-            pending.Parent=lib
+            for _,clone in ipairs(pending) do clone.Parent=lib end
         end
         if not target then
             target=Instance.new("Model"); createdTarget=true
@@ -516,11 +653,13 @@ local function commit(allowUpload)
         recording=nil
         root=target; loadedPivot=target:GetPivot(); loadedMeta=meta; loadedOutput=output
         if template then asset=template end
+        repeatLayers=savedLayers; syncLayers()
     end)
     if not success then
         if output then output:Destroy() end
         if meta then meta:Destroy() end
-        if pending then pending:Destroy() end
+        if overlays and not overlays.Parent then overlays:Destroy() end
+        for _,clone in ipairs(pending) do clone:Destroy() end
         if createdLibrary then createdLibrary:Destroy() end
         if createdTarget and target then target:Destroy() end
         if not createdTarget and target then
@@ -543,6 +682,8 @@ local function loadSelected()
     local pp={}
     for i=1,n do local v=meta:FindFirstChild(string.format("P%03d",i)); assert(v and v:IsA("Vector3Value"),"Missing control point"); pp[i]=meta:GetAttribute("CoordinateSpace")=="Local" and s:GetPivot():PointToWorldSpace(v.Value) or v.Value end
     local pr=meta:GetAttribute("preset"); assert(table.find(presets,pr),"Unknown preset")
+    local loadedLayers=Layers.read(meta)
+    repeatLayers=loadedLayers; layerIndex=#repeatLayers>0 and 1 or 0; syncLayers()
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated"); points=pp; selected=1; preset=pr; smooth=meta:GetAttribute("smooth")==true; collide=meta:GetAttribute("collide")==true
     for _,k in ipairs({"width","height","spacing","step","offset","yaw","roll","sides","uvLength","uvWidth","angle","tolerance"}) do local v=meta:GetAttribute(k); if type(v)=="number" then fields[k].Text=tostring(v) elseif k=="sides" then fields[k].Text="16" elseif k=="uvLength" or k=="uvWidth" then fields[k].Text="4" elseif k=="angle" then fields[k].Text="8" elseif k=="tolerance" then fields[k].Text="0.05" end end
     fields.profile.Text=meta:GetAttribute("profile") or "rectangle"
@@ -551,28 +692,54 @@ local function loadSelected()
     local saved=meta:GetAttribute("materialStyles"); styles=type(saved)=="string" and Http:JSONDecode(saved) or {}; syncMaterials()
     syncButtons(); refreshLabel(); refreshPreview(); say("Loaded saved path. Generate updates only this model's output.")
 end
-label("03   BUILD / SAVED PATHS",22,C.muted)
-button("Preview mesh (no upload)",guarded(function()
-    editAllowed(); stopMode(); clearMeshPreview(); resetUpload()
-    local o,path=options(),pathFor()
-    assert(o.preset=="Extrude" or o.preset=="Deform","Choose Extrude or Deform")
-    busy=true
-    local function active() return not unloading and widget.Enabled and not RunService:IsRunning() end
-    local ok,part,mesh=pcall(function()
-        if o.preset=="Extrude" then return Extrude.build(path,o,asset,true,active,styles.ExtrudedMesh) end
-        validAsset(asset); return Deform.build(asset,path,o,active,true)
-    end)
-    busy=false
-    if not ok then error(part,0) end
-    if not active() then part:Destroy(); mesh:Destroy(); return end
+currentSection="Build"
+label("04   BUILD / SAVED PATHS",22,C.muted)
+local function previewNow(manual)
+    if previewBusy or busy or not widget.Enabled or RunService:IsRunning() then return end
+    if #points<2 then if manual then say("Add at least two points",true) end; return end
     if not preview then refreshPreview() end
-    meshPreview=part; previewEditable=mesh; part.Parent=preview
-    say("Temporary mesh preview. Change settings or path to dismiss; Generate requires explicit upload authorization.")
-end),true)
-button("Clear mesh preview",clearMeshPreview)
+    clearMeshPreview(); previewDue=nil; resetUpload()
+    local revision=previewRevision
+    local function active() return revision==previewRevision and not unloading and widget.Enabled and not RunService:IsRunning() end
+    previewBusy=true
+    local part,mesh,overlays
+    local ok,err=pcall(function()
+        local o,path=options(),pathFor()
+        local list={}
+        for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
+        overlays=Layers.build(path,list,validAsset,cloneAsset,1000,true)
+        if o.preset=="Extrude" then
+            part,mesh=Extrude.build(path,o,asset,true,active,styles.ExtrudedMesh)
+        elseif o.preset=="Deform" then
+            validAsset(asset); part,mesh=Deform.build(asset,path,o,active,true)
+        end
+        if not active() then return end
+        if part then part.Parent=preview end
+        overlays.Archivable=false; overlays.Parent=preview
+        meshPreview=part; previewEditable=mesh; layerPreview=overlays
+        part=nil; mesh=nil; overlays=nil
+        if manual then say("Preview ready. Part-based base generators show guides only; repeat layers and mesh bases show geometry.") end
+    end)
+    if part then part:Destroy() end; if mesh then mesh:Destroy() end; if overlays then overlays:Destroy() end
+    previewBusy=false
+    if not ok and active() then say("Preview: "..tostring(err),true) end
+end
+button("Preview now (no upload)",guarded(function() editAllowed(); stopMode(); previewNow(true) end),true)
+liveButton=button("Auto preview: OFF",guarded(function()
+    editAllowed(); setLive(not liveEnabled); if not liveEnabled then clearMeshPreview() end
+end))
+button("Clear preview / disable auto",function() setLive(false); clearMeshPreview() end)
+uploadButton=button("Authorize ONE mesh upload: OFF",guarded(function()
+    editAllowed(); assert(preset=="Deform" or preset=="Extrude","Only mesh generators need an asset upload")
+    setLive(false)
+    uploadArmed=not uploadArmed
+    uploadButton.Text=uploadArmed and "Authorize ONE mesh upload: ON" or "Authorize ONE mesh upload: OFF"
+    say(uploadArmed and "Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo." or "Mesh upload disabled.")
+end))
 button("Generate / update saved path",guarded(function()
+    assert(not previewBusy,"Wait for preview to finish before generating")
     local authorized=uploadArmed
-    resetUpload(); clearMeshPreview()
+    setLive(false); resetUpload(); clearMeshPreview()
     busy=true
     local ok,err=pcall(commit,authorized)
     busy=false
@@ -588,9 +755,12 @@ widget:GetPropertyChangedSignal("Enabled"):Connect(function()
     if widget.Enabled then refreshPreview() else resetUpload(); stopMode(); clearPreview() end
 end)
 local runConnection=RunService.Heartbeat:Connect(function()
-    if RunService:IsRunning() and (preview or mode or uploadArmed) then resetUpload(); stopMode(); clearPreview() end
+    if RunService:IsRunning() and (preview or mode or uploadArmed or liveEnabled) then resetUpload(); stopMode(); clearPreview(); return end
+    if liveEnabled and previewDue and os.clock()>=previewDue and not busy and not previewBusy and not dragging and not axisStart then
+        previewDue=nil; task.spawn(function() previewNow(false) end)
+    end
 end)
 tool.Click:Connect(function() widget.Enabled=not widget.Enabled end)
-plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); runConnection:Disconnect() end)
+plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
 for _,field in pairs(fields) do field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
-syncButtons(); syncMaterials(); refreshLabel(); if widget.Enabled then refreshPreview() end
+syncButtons(); syncMaterials(); syncLayers(); selectSection("Path"); refreshLabel(); if widget.Enabled then refreshPreview() end

@@ -1,6 +1,7 @@
 -- In-Studio math self-tests; no assets, uploads or Workspace edits.
 local G=require(script.Parent.Geometry)
 local E=require(script.Parent.Extrude)
+local L=require(script.Parent.Layers)
 local T={}
 local function close(a,b,e) assert(math.abs(a-b)<(e or 1e-4),"Expected "..tostring(b)..", got "..tostring(a)) end
 function T.run()
@@ -22,6 +23,15 @@ function T.run()
     test(function() local p=G.path({V(0,0,0),V(0,0,-20)},false); local o={profile="rectangle",width=4,height=2,sides=16,step=5,angle=8,tolerance=0.05}; local plan=E.plan(p,o); assert(plan.vertices==20 and plan.triangles==36); close(plan.perimeter[5],12) end)
     test(function() local q,closed=E.profile({profile="arch",width=4,height=2,sides=8}); assert(#q==9 and not closed) end)
     test(function() local q,closed=E.profile({profile="0,0;0,2;2,2;2,0",width=4,height=2,sides=8}); assert(#q==4 and closed); assert(not pcall(E.profile,{profile="0,0;2,2;0,2;2,0",width=4,height=2,sides=8})) end)
+    test(function()
+        local p=G.path({V(0,0,0),V(0,0,-10)},false)
+        local l={spacing=5,side=2,height=3,yaw=0,roll=0,enabled=true,collide=true,source={}}
+        local cf=L.frame(p,5,l); close((cf.Position-V(2,3,-5)).Magnitude,0)
+        local plan,count=L.plan(p,{l},function() return 2 end,10); assert(#plan==1 and count==6)
+        assert(not pcall(L.plan,p,{l},function() return 2 end,5))
+        l.enabled=false; local _,empty=L.plan(p,{l},function() error("disabled") end,10); assert(empty==0)
+    end)
+    test(function() assert(not pcall(L.validate,{spacing=0,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true})) end)
     return n
 end
 return T

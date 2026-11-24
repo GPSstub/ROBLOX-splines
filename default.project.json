@@ -22,6 +22,9 @@
     },
     "Extrude": {
       "$path": "src/Extrude.lua"
+    },
+    "Layers": {
+      "$path": "src/Layers.lua"
     }
   }
 }

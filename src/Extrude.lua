@@ -61,6 +61,7 @@ function E.build(path,o,source,preview,canContinue,style)
     local ok,result=pcall(function()
         mesh=A:CreateEditableMesh(); assert(mesh,"EditableMesh memory budget unavailable")
         local rings,uvs,normals={},{},{}
+        local round=o.profile=="circle" or o.profile=="arch"
         local anchor=G.at(path,0)
         local roll=math.rad(o.roll)
         local co,si=math.cos(roll),math.sin(roll)
@@ -74,11 +75,20 @@ function E.build(path,o,source,preview,canContinue,style)
             end
             for j=1,plan.edges+1 do uvs[i][j]=mesh:AddUV(Vector2.new(d/o.uvLength,plan.perimeter[j]/o.uvWidth)) end
             -- Per-edge smoothing along length, with a hard profile corner.
-            for j=1,plan.edges do
-                local nextJ=j%n+1
-                local e=plan.profile[nextJ]-plan.profile[j]
-                local normal=(right*e.Y-up*e.X).Unit
-                normals[i][j]=mesh:AddNormal(normal)
+            if round then
+                local rx=o.width/2
+                local ry=o.profile=="arch" and o.height or o.height/2
+                for j,q in ipairs(plan.profile) do
+                    local normal=(right*(q.X/(rx*rx))+up*(q.Y/(ry*ry))).Unit
+                    if o.profile=="arch" then normal=-normal end -- clockwise open profile winding
+                    normals[i][j]=mesh:AddNormal(normal)
+                end
+            else
+                for j=1,plan.edges do
+                    local nextJ=j%n+1
+                    local edge=plan.profile[nextJ]-plan.profile[j]
+                    normals[i][j]=mesh:AddNormal((right*edge.Y-up*edge.X).Unit)
+                end
             end
         end
         local function tri(a,b,c,ua,ub,uc,na,nb,nc)
@@ -92,8 +102,10 @@ function E.build(path,o,source,preview,canContinue,style)
                 local ua,ub,uc,ud=uvs[i][j],uvs[i][j+1],uvs[i+1][j+1],uvs[i+1][j]
                 local na,nb=normals[i][j],normals[i+1][j]
                 -- Local right × up = -forward; this winding points outward.
-                tri(a,d,c,ua,ud,uc,na,nb,nb)
-                tri(a,c,b,ua,uc,ub,na,nb,na)
+                local nc=round and normals[i+1][k] or nb
+                local nd=round and normals[i][k] or na
+                tri(a,d,c,ua,ud,uc,na,nb,nc)
+                tri(a,c,b,ua,uc,ub,na,nc,nd)
             end
         end
         if plan.closed then

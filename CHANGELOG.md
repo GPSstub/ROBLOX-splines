@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5 — 2026-11-24
+### Added
+- Up to 12 repeat layers on one path, with independent asset, spacing, lateral/vertical offset, rotation, enabled and collision settings.
+- Layer metadata and source snapshots stored with existing path data; deduplicated within each generation.
+- Four editor tabs and direct generator selection.
+- Optional axis movement handles, with existing surface-drag fallback.
+- Debounced automatic, non-uploading mesh and layer previews after dragging stops; stale results discarded.
+- Smooth circular and arch cross-section normals.
+- Two additional self-test cases (15 total; Studio execution pending).
+
+### Limitations
+- One base generator plus repeat overlays, not a full multi-mesh graph.
+- Preview of Part-based and Custom base generators is still guide-only.
+- Studio UI, handles, collision, preview and asset persistence require acceptance testing.
+
 ## v0.4 — 2026-11-24
 ### Added
 - Continuous Extrude generator with rectangle, circle, open arch and convex custom profile.
