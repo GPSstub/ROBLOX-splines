@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4 — 2026-11-24
+### Added
+- Continuous Extrude generator with rectangle, circle, open arch and convex custom profile.
+- Adaptive path sampling with turn angle and chord error settings.
+- Distance-based side UVs, cap UVs, shared ring vertices and explicit normal seams.
+- Temporary, upload-free mesh preview for Extrude and Deform.
+- Mesh collision fidelity selector and explicit asset owner parameters.
+- Five additional geometry self-tests (13 total, not executed in Studio).
+
+### Known limitations
+- Manual preview refresh; no live mesh dragging yet.
+- Imported mesh subdivision, round-profile normal smoothing, chunking, and caching remain pending.
+- Studio runtime, UV appearance, collision and asset persistence remain unverified.
+
 ## v0.3 — 2026-11-24
 
 ### Changed

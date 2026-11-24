@@ -16,6 +16,12 @@
     },
     "SelfTest": {
       "$path": "src/SelfTest.lua"
+    },
+    "MeshOutput": {
+      "$path": "src/MeshOutput.lua"
+    },
+    "Extrude": {
+      "$path": "src/Extrude.lua"
     }
   }
 }

@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<roblox version="4"><External>null</External><External>nil</External><Item class="Model" referent="RBX0"><Properties><string name="Name">PathForge</string></Properties><Item class="Script" referent="RBX1"><Properties><string name="Name">Plugin</string><ProtectedString name="Source">-- PathForge v0.3 | Studio-only path editor. Mesh uploads are explicit.
+<roblox version="4"><External>null</External><External>nil</External><Item class="Model" referent="RBX0"><Properties><string name="Name">PathForge</string></Properties><Item class="Script" referent="RBX1"><Properties><string name="Name">Plugin</string><ProtectedString name="Source">-- PathForge v0.4 | Studio-only path editor. Mesh uploads are explicit.
 if not plugin then return end
 local G=require(script.Parent.Geometry)
 local Materials=require(script.Parent.Materials)
 local Deform=require(script.Parent.Deform)
+local Extrude=require(script.Parent.Extrude)
 local SelfTest=require(script.Parent.SelfTest)
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -17,11 +18,11 @@ local info=DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right,false,false,3
 local widget=plugin:CreateDockWidgetPluginGuiAsync("PathForge_Editor_v1",info)
 widget.Title="PathForge | Level Toolkit"
 local mouse=plugin:GetMouse()
-local presets={"Rail","Road","Wall","Fence","Pipe","Custom","Deform"}
-local defaults={Rail={width=3.2,height=0.2,spacing=1.8,step=1},Road={width=12,height=0.35,spacing=8,step=2},Wall={width=0.8,height=8,spacing=5,step=2},Fence={width=0.3,height=4,spacing=5,step=2},Pipe={width=1.4,height=1.5,spacing=8,step=1},Custom={width=1,height=0,spacing=5,step=2},Deform={width=1,height=0,spacing=5,step=2}}
+local presets={"Rail","Road","Wall","Fence","Pipe","Custom","Deform","Extrude"}
+local defaults={Rail={width=3.2,height=0.2,spacing=1.8,step=1},Road={width=12,height=0.35,spacing=8,step=2},Wall={width=0.8,height=8,spacing=5,step=2},Fence={width=0.3,height=4,spacing=5,step=2},Pipe={width=1.4,height=1.5,spacing=8,step=1},Custom={width=1,height=0,spacing=5,step=2},Deform={width=1,height=0,spacing=5,step=2},Extrude={width=6,height=1,spacing=5,step=2}}
 local fields={}
 local styles={}
-local materialSlots={"RailFoot","RailHead","Sleeper","RoadSurface","EdgeLine","CenterMark","Wall","FenceRail","FencePost","Pipe","Joint"}
+local materialSlots={"RailFoot","RailHead","Sleeper","RoadSurface","EdgeLine","CenterMark","Wall","FenceRail","FencePost","Pipe","Joint","ExtrudedMesh"}
 local materialSlot=1
 local busy=false
 local uploadArmed=false
@@ -32,6 +33,12 @@ local loadedMeta=nil
 local loadedOutput=nil
 local draftGuides={}
 local draftNodes={}
+local meshPreview,previewEditable
+local fidelity="Default"
+local function clearMeshPreview()
+    if meshPreview then meshPreview:Destroy(); meshPreview=nil end
+    if previewEditable then previewEditable:Destroy(); previewEditable=nil end
+end
 local function resetUpload()
     uploadArmed=false
     if uploadButton then uploadButton.Text="Authorize ONE mesh upload: OFF" end
@@ -50,6 +57,7 @@ local dragging=false
 local lastMove=0
 local refreshPreview
 local refreshLabel
+local syncButtons=function() end
 local MAX_PARTS=6500
 local MAX_POINTS=128
 local C={bg=Color3.fromRGB(24,28,34),panel=Color3.fromRGB(38,44,52),text=Color3.fromRGB(232,237,242),muted=Color3.fromRGB(157,170,185),accent=Color3.fromRGB(36,126,146),error=Color3.fromRGB(255,147,139)}
@@ -85,7 +93,7 @@ local function input(key,title,value)
     fields[key]=box
     return box
 end
-local title=label("PATHFORGE   /   0.3",28)
+local title=label("PATHFORGE   /   0.4",28)
 title.Font=Enum.Font.GothamBold; title.TextSize=19
 label("01   PATH / CONTROL POINTS",22,C.muted)
 local status=label("Create a path or load a saved PathForge model.",46)
@@ -104,12 +112,13 @@ local function number(key,lo,hi)
     return v
 end
 local function options()
-    return {materialStyles=Http:JSONEncode(styles),preset=preset,smooth=smooth,collide=collide,width=number("width",0.05,100),height=number("height",-50,100),spacing=number("spacing",0.2,200),step=number("step",0.15,100),offset=number("offset",-100,100),yaw=number("yaw",-360,360),roll=number("roll",-360,360)}
+    return {profile=fields.profile.Text,sides=math.floor(number("sides",3,64)),uvLength=number("uvLength",0.05,1000),uvWidth=number("uvWidth",0.05,1000),angle=number("angle",1,90),tolerance=number("tolerance",0.005,10),fidelity=fidelity,materialStyles=Http:JSONEncode(styles),preset=preset,smooth=smooth,collide=collide,width=number("width",0.05,100),height=number("height",-50,100),spacing=number("spacing",0.2,200),step=number("step",0.15,100),offset=number("offset",-100,100),yaw=number("yaw",-360,360),roll=number("roll",-360,360)}
 end
 local function pathFor()
     local path=G.path(points,smooth); path.linear=not smooth; return path
 end
 local function clearPreview()
+    clearMeshPreview()
     if preview then preview:Destroy(); preview=nil end
     table.clear(draftGuides); table.clear(draftNodes)
 end
@@ -135,6 +144,7 @@ local function axisCF(a,b,up)
 end
 -- Reuse guide instances while dragging; no repeated full-folder allocation.
 refreshPreview=function()
+    clearMeshPreview()
     if not widget.Enabled or RunService:IsRunning() or unloading then clearPreview(); return end
     if not preview or preview.Parent~=workspace then
         clearPreview()
@@ -175,7 +185,7 @@ refreshPreview=function()
     for i=#draftNodes,#points+1,-1 do draftNodes[i]:Destroy(); draftNodes[i]=nil end
 end
 local pointLabel=label("0 points",22)
-button("New path / clear draft",guarded(function() editAllowed(); stopMode(); root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil; asset=nil; resetUpload(); points={}; selected=0; styles={}; syncMaterials(); refreshLabel(); refreshPreview(); say("New draft. Existing generated models are unchanged.") end))
+button("New path / clear draft",guarded(function() editAllowed(); stopMode(); root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil; asset=nil; resetUpload(); points={}; selected=0; styles={}; syncMaterials(); syncButtons(); refreshLabel(); refreshPreview(); say("New draft. Existing generated models are unchanged.") end))
 button("Add points in viewport",guarded(function() startMode("add") end),true)
 button("Move nodes by dragging",guarded(function() startMode("move") end))
 button("Insert node after selected",guarded(function() assert(selected&gt;0,"Select a node first"); startMode("insert") end))
@@ -234,29 +244,42 @@ mouse.Button1Up:Connect(guarded(function() if dragging then dragging=false; move
 plugin.Deactivation:Connect(function() mode=nil; dragging=false end)
 label("02   GENERATOR / PARAMETERS",22,C.muted)
 local presetButton,smoothButton,collisionButton,assetLabel
-local function syncButtons()
+syncButtons=function()
     presetButton.Text="Preset: "..preset.."   &gt;"
     smoothButton.Text=smooth and "Curve: Smooth spline" or "Curve: Straight segments"
     collisionButton.Text=collide and "Collision: ON" or "Collision: OFF"
     assetLabel.Text=asset and ("Asset: "..asset.Name) or "Asset: none (Custom / Deform)"
-    if preset~="Deform" then resetUpload() end
-    if uploadButton then uploadButton.Visible=preset=="Deform" end
+    if preset~="Deform" and preset~="Extrude" then resetUpload() end
+    if uploadButton then uploadButton.Visible=preset=="Deform" or preset=="Extrude" end
 end
 local function applyDefaults()
     for k,v in pairs(defaults[preset]) do fields[k].Text=tostring(v) end
 end
 presetButton=button("Preset: Rail",function()
-    local idx=table.find(presets,preset) or 1; preset=presets[idx%#presets+1]; applyDefaults(); syncButtons()
+    local idx=table.find(presets,preset) or 1; preset=presets[idx%#presets+1]; if preset=="Extrude" then asset=nil end; resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
 end,true)
 smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
-collisionButton=button("Collision: ON",function() collide=not collide; syncButtons() end)
+collisionButton=button("Collision: ON",function() collide=not collide; clearMeshPreview(); syncButtons() end)
 input("width","Width / rail gauge / diameter",3.2)
 input("height","Height / base elevation",0.2)
 input("spacing","Asset / sleeper / post spacing",1.8)
 input("step","Segment size (studs)",1)
 input("offset","Vertical offset (studs)",0)
 input("yaw","Custom yaw (degrees)",0)
-input("roll","Custom roll (degrees)",0)
+input("roll","Roll (degrees)",0)
+label("02A  EXTRUDE / MESH QUALITY",22,C.muted)
+input("profile","Profile (rectangle / circle / arch / x,y;...)", "rectangle")
+input("sides","Circle / arch subdivisions",16)
+input("uvLength","UV length per tile",4)
+input("uvWidth","UV perimeter per tile",4)
+input("angle","Max turn per segment (degrees)",8)
+input("tolerance","Chord tolerance (studs)",0.05)
+local collisionModes={"Default","Box","Hull","PreciseConvexDecomposition"}
+local fidelityButton
+fidelityButton=button("Mesh collision: Default",function()
+    fidelity=collisionModes[(table.find(collisionModes,fidelity) or 1)%#collisionModes+1]
+    fidelityButton.Text="Mesh collision: "..fidelity; clearMeshPreview()
+end)
 assetLabel=label("Asset: none (Custom preset only)",30,C.muted)
 local function validAsset(a)
     assert(a and (a:IsA("Model") or a:IsA("BasePart")),"Select a Model or BasePart")
@@ -272,7 +295,7 @@ end
 button("Use selected Model as custom asset",guarded(function()
     editAllowed(); local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
     assert(not preview or not a:IsDescendantOf(preview),"Do not use a preview node")
-    asset=a; preset="Custom"; applyDefaults(); syncButtons(); say("Asset selected. A reusable snapshot is stored when generated.")
+    clearMeshPreview(); asset=a; preset="Custom"; applyDefaults(); syncButtons(); say("Asset selected. A reusable snapshot is stored when generated.")
 end))
 label("02B  MATERIAL SLOTS",22,C.muted)
 local slotButton,styleLabel
@@ -292,27 +315,38 @@ button("Capture material from selected part",guarded(function()
     editAllowed()
     local s=Selection:Get()[1]
     assert(not preview or not s or not s:IsDescendantOf(preview),"Select a real source part")
-    styles[materialSlots[materialSlot]]=Materials.capture(s)
+    styles[materialSlots[materialSlot]]=Materials.capture(s); clearMeshPreview()
     syncMaterials(); say("Material slot captured. Generate to apply.")
 end),true)
-button("Reset material slot",function() styles[materialSlots[materialSlot]]=nil; syncMaterials() end)
-button("Reset all material slots",function() styles={}; syncMaterials() end)
+button("Reset material slot",function() styles[materialSlots[materialSlot]]=nil; clearMeshPreview(); syncMaterials() end)
+button("Reset all material slots",function() styles={}; clearMeshPreview(); syncMaterials() end)
 button("Use selected MeshPart / Deform",guarded(function()
     editAllowed()
     local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
     assert(a:IsA("MeshPart"),"Select a single MeshPart")
     assert(not preview or not a:IsDescendantOf(preview),"Do not use preview objects")
     assert(not root or not a:IsDescendantOf(root),"Use a source mesh outside the active generated path")
-    resetUpload(); asset=a; preset="Deform"; applyDefaults(); syncButtons()
+    clearMeshPreview(); resetUpload(); asset=a; preset="Deform"; applyDefaults(); syncButtons()
     say("Deform uses the full path length, local -Z forward. Dense mesh required.")
 end))
 uploadButton=button("Authorize ONE mesh upload: OFF",guarded(function()
-    editAllowed(); assert(preset=="Deform","Only Deform needs an asset upload")
+    editAllowed(); assert(preset=="Deform" or preset=="Extrude","Only mesh generators need an asset upload")
     uploadArmed=not uploadArmed
     uploadButton.Text=uploadArmed and "Authorize ONE mesh upload: ON" or "Authorize ONE mesh upload: OFF"
     say(uploadArmed and "Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo." or "Mesh upload disabled.")
 end))
 uploadButton.Visible=false
+button("Use selected MeshPart appearance / Extrude",guarded(function()
+    editAllowed(); local a=Selection:Get()[1]; validAsset(a)
+    assert(a:IsA("MeshPart") and a.Parent,"Select a MeshPart with PBR appearance")
+    assert(not preview or not a:IsDescendantOf(preview),"Select a real source")
+    assert(not root or not a:IsDescendantOf(root),"Choose a source outside active path")
+    asset=a; preset="Extrude"; resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
+    say("Extrude copies selected mesh appearance, not its geometry.")
+end))
+button("Clear source / use Extrude material slot",guarded(function()
+    asset=nil; preset="Extrude"; resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
+end))
 local function cloneAsset(a)
     local c=a:Clone(); assert(c,"Cannot clone asset")
     for _,d in ipairs(c:GetDescendants()) do
@@ -343,10 +377,15 @@ local function build(path,o,source,allowUpload)
         if cf then add(name,cf,Vector3.new(w,h,len+(overlap or 0)),mat,col) end
     end
     local ok,err=pcall(function()
+        if o.preset=="Extrude" then
+            assert(allowUpload,"Authorize one mesh upload before Generate")
+            local part=Extrude.build(path,o,source,false,function() return not unloading and widget.Enabled and not RunService:IsRunning() end,overrides.ExtrudedMesh)
+            part.Parent=output; count=1; return
+        end
         if o.preset=="Deform" then
             validAsset(source)
             assert(allowUpload,"Authorize one mesh upload before Generate (Deform only)")
-            local part=Deform.build(source,path,o,function() return not unloading and not RunService:IsRunning() end); part.Parent=output; count=1; return
+            local part=Deform.build(source,path,o,function() return not unloading and widget.Enabled and not RunService:IsRunning() end); part.Parent=output; count=1; return
         end
         if o.preset=="Custom" then
             local per=validAsset(source)
@@ -427,7 +466,7 @@ local function commit(allowUpload)
     local pivot=target and target:GetPivot() or CFrame.new(points[1])
     local oldGenerated,oldMeta
     local function checkTarget()
-        assert(not unloading and not RunService:IsRunning(),"Editor closed or play testing started")
+        assert(not unloading and widget.Enabled and not RunService:IsRunning(),"Editor closed or play testing started")
         if target then
             assert(target:IsDescendantOf(workspace) and target:GetAttribute("PathForgeSchema")==1,"Saved path no longer exists")
             assert(target:FindFirstChild("Generated")==loadedOutput and target:FindFirstChild("PathData")==loadedMeta,"Path changed externally; reload before generating")
@@ -435,13 +474,13 @@ local function commit(allowUpload)
         end
     end
     checkTarget()
-    local source=asset
+    local source=(o.preset=="Custom" or o.preset=="Deform" or o.preset=="Extrude") and asset or nil
     local output,meta,pending,createdLibrary,recording
     local count
     local createdTarget=false
     local success,err=pcall(function()
         local template
-        if o.preset=="Custom" or o.preset=="Deform" then
+        if o.preset=="Custom" or o.preset=="Deform" or (o.preset=="Extrude" and source) then
             validAsset(source); assert(source.Parent,"Source asset was removed")
             assert(not target or not source:IsDescendantOf(target),"Choose a source outside the active generated path")
             local library=Storage:FindFirstChild("PathForgeAssets")
@@ -506,15 +545,35 @@ local function loadSelected()
     for i=1,n do local v=meta:FindFirstChild(string.format("P%03d",i)); assert(v and v:IsA("Vector3Value"),"Missing control point"); pp[i]=meta:GetAttribute("CoordinateSpace")=="Local" and s:GetPivot():PointToWorldSpace(v.Value) or v.Value end
     local pr=meta:GetAttribute("preset"); assert(table.find(presets,pr),"Unknown preset")
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated"); points=pp; selected=1; preset=pr; smooth=meta:GetAttribute("smooth")==true; collide=meta:GetAttribute("collide")==true
-    for _,k in ipairs({"width","height","spacing","step","offset","yaw","roll"}) do local v=meta:GetAttribute(k); if type(v)=="number" then fields[k].Text=tostring(v) end end
+    for _,k in ipairs({"width","height","spacing","step","offset","yaw","roll","sides","uvLength","uvWidth","angle","tolerance"}) do local v=meta:GetAttribute(k); if type(v)=="number" then fields[k].Text=tostring(v) elseif k=="sides" then fields[k].Text="16" elseif k=="uvLength" or k=="uvWidth" then fields[k].Text="4" elseif k=="angle" then fields[k].Text="8" elseif k=="tolerance" then fields[k].Text="0.05" end end
+    fields.profile.Text=meta:GetAttribute("profile") or "rectangle"
+    local savedFidelity=meta:GetAttribute("fidelity"); fidelity=table.find(collisionModes,savedFidelity) and savedFidelity or "Default"; fidelityButton.Text="Mesh collision: "..fidelity
     local ref=meta:FindFirstChild("Asset"); asset=ref and ref:IsA("ObjectValue") and ref.Value or nil
     local saved=meta:GetAttribute("materialStyles"); styles=type(saved)=="string" and Http:JSONDecode(saved) or {}; syncMaterials()
     syncButtons(); refreshLabel(); refreshPreview(); say("Loaded saved path. Generate updates only this model's output.")
 end
 label("03   BUILD / SAVED PATHS",22,C.muted)
+button("Preview mesh (no upload)",guarded(function()
+    editAllowed(); stopMode(); clearMeshPreview(); resetUpload()
+    local o,path=options(),pathFor()
+    assert(o.preset=="Extrude" or o.preset=="Deform","Choose Extrude or Deform")
+    busy=true
+    local function active() return not unloading and widget.Enabled and not RunService:IsRunning() end
+    local ok,part,mesh=pcall(function()
+        if o.preset=="Extrude" then return Extrude.build(path,o,asset,true,active,styles.ExtrudedMesh) end
+        validAsset(asset); return Deform.build(asset,path,o,active,true)
+    end)
+    busy=false
+    if not ok then error(part,0) end
+    if not active() then part:Destroy(); mesh:Destroy(); return end
+    if not preview then refreshPreview() end
+    meshPreview=part; previewEditable=mesh; part.Parent=preview
+    say("Temporary mesh preview. Change settings or path to dismiss; Generate requires explicit upload authorization.")
+end),true)
+button("Clear mesh preview",clearMeshPreview)
 button("Generate / update saved path",guarded(function()
     local authorized=uploadArmed
-    resetUpload()
+    resetUpload(); clearMeshPreview()
     busy=true
     local ok,err=pcall(commit,authorized)
     busy=false
@@ -534,6 +593,7 @@ local runConnection=RunService.Heartbeat:Connect(function()
 end)
 tool.Click:Connect(function() widget.Enabled=not widget.Enabled end)
 plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); runConnection:Disconnect() end)
+for _,field in pairs(fields) do field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
 syncButtons(); syncMaterials(); refreshLabel(); if widget.Enabled then refreshPreview() end
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX2"><Properties><string name="Name">Geometry</string><ProtectedString name="Source">-- Pure path math; uses only Roblox Vector3 arithmetic.
@@ -638,7 +698,31 @@ function G.frame(path,d)
     end
     local f=tangent(path,d)
     local r=transport(cache[lo].r,cache[lo].f,f)
-    return G.at(path,d),f,r,r:Cross(f).Unit
+    -- Adaptive samples refine by chord error and tangent angle. Explicit polyline
+-- corners remain present; refinement is bounded, so difficult paths fail safely.
+function G.adaptive(path,step,maxAngle,tolerance,limit)
+    assert(step&gt;0 and maxAngle&gt;0 and tolerance&gt;0 and limit&gt;=1,"Invalid adaptive settings")
+    local base=G.segments(path,step,limit)
+    local out={base[1]}
+    local function split(a,b,depth)
+        local pa,pb=G.at(path,a),G.at(path,b)
+        local mid=(a+b)/2
+        local pm=G.at(path,mid)
+        local chordError=(pm-(pa+pb)/2).Magnitude
+        local va,vb=pm-pa,pb-pm
+        local angle=0
+        if va.Magnitude&gt;EPS and vb.Magnitude&gt;EPS then angle=math.acos(math.clamp(va.Unit:Dot(vb.Unit),-1,1)) end
+        if not path.linear and (chordError&gt;tolerance or angle&gt;maxAngle) and depth&lt;10 and b-a&gt;0.025 then
+            split(a,mid,depth+1); split(mid,b,depth+1)
+        else
+            assert(#out&lt;=limit,"Adaptive segment budget exceeded")
+            out[#out+1]=b
+        end
+    end
+    for i=1,#base-1 do split(base[i],base[i+1],0) end
+    return out
+end
+return G.at(path,d),f,r,r:Cross(f).Unit
 end
 -- Continuous geometry includes both endpoints and distributes segment length evenly.
 function G.segments(path,step,limit)
@@ -720,8 +804,9 @@ return M
 <Item class="ModuleScript" referent="RBX4"><Properties><string name="Name">Deform</string><ProtectedString name="Source">-- Explicit asset-backed deformation. Called only after a one-shot user authorization.
 local AssetService=game:GetService("AssetService")
 local G=require(script.Parent.Geometry)
+local O=require(script.Parent.MeshOutput)
 local D={}
-function D.build(source,path,o,canContinue)
+function D.build(source,path,o,canContinue,preview)
     assert(source and source:IsA("MeshPart"),"Deform requires one static MeshPart")
     assert(not source:FindFirstChildWhichIsA("Bone",true),"Skinned meshes are not supported")
     assert(path.length&lt;=2000,"Deform path limit: 2000 studs")
@@ -747,43 +832,19 @@ function D.build(source,path,o,canContinue)
             mesh:SetPosition(id,world)
         end
         for _,id in ipairs(mesh:GetNormals()) do mesh:ResetNormal(id) end
-        local finalCenter=mesh:GetCenter()
-        local finalSize=mesh:GetSize()
-        assert(canContinue(),"Editor closed or play test started before upload")
-        local status,id=AssetService:CreateAssetAsync(mesh,Enum.AssetType.Mesh,{
-            Name="PathForge "..source.Name,
-            Description="Spline-deformed mesh generated by PathForge"
-        })
-        assert(status==Enum.CreateAssetResult.Success and type(id)=="number","Mesh upload failed: "..tostring(id))
-        warn("[PathForge] Uploaded mesh asset ID:",id)
-        assert(canContinue(),"Editor closed or play test started. Uploaded asset ID: "..tostring(id))
-        local okPart,part=pcall(function()
-            return AssetService:CreateMeshPartAsync(Content.fromUri("rbxassetid://"..tostring(id)),{CollisionFidelity=Enum.CollisionFidelity.Default})
-        end)
-        assert(okPart and part,"Uploaded mesh "..tostring(id).." but could not instantiate: "..tostring(part))
-        output=part
-        output:SetAttribute("PathForgeMeshAssetId",id)
-        output.Name="DeformedMesh"
-        output.Size=Vector3.new(math.max(finalSize.X,0.001),math.max(finalSize.Y,0.001),math.max(finalSize.Z,0.001))
-        output.CFrame=CFrame.new(anchor+finalCenter)
-        output.Material=source.Material; output.MaterialVariant=source.MaterialVariant
-        output.Color=source.Color; output.Transparency=source.Transparency; output.Reflectance=source.Reflectance
-        output.TextureContent=source.TextureContent
-        output.DoubleSided=source.DoubleSided; output.CastShadow=source.CastShadow
-        for _,child in ipairs(source:GetChildren()) do
-            if child:IsA("SurfaceAppearance") and child.Archivable then child:Clone().Parent=output end
-        end
-        output.Anchored=true; output.CanCollide=o.collide; output.CanTouch=false
+        output=O.create(mesh,anchor,o,"DeformedMesh",source,preview,canContinue)
         return output
     end)
-    if mesh then mesh:Destroy() end
-    if not ok then if output then output:Destroy() end; error(result,0) end
+    if not ok then if output then output:Destroy() end; if mesh then mesh:Destroy() end; error(result,0) end
+    if preview then return result,mesh end
+    mesh:Destroy()
     return result
 end
 return D
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX5"><Properties><string name="Name">SelfTest</string><ProtectedString name="Source">-- In-Studio math self-tests; no assets, uploads or Workspace edits.
 local G=require(script.Parent.Geometry)
+local E=require(script.Parent.Extrude)
 local T={}
 local function close(a,b,e) assert(math.abs(a-b)&lt;(e or 1e-4),"Expected "..tostring(b)..", got "..tostring(a)) end
 function T.run()
@@ -800,7 +861,195 @@ function T.run()
     end)
     test(function() local p=G.path({V(0,0,0),V(0,10,0)},true); local _,f,r,u=G.frame(p,5); close(f.Y,1); close(r:Dot(u),0) end)
     test(function() local p=G.path({V(0,0,0),V(100,0,0)},false); assert(not pcall(G.instances,p,1,10)); assert(not pcall(G.segments,p,1,10)) end)
+    test(function() local p=G.path({V(0,0,0),V(0,0,-20)},true); local ds=G.adaptive(p,5,0.1,0.01,100); assert(#ds==5); close(ds[#ds],20) end)
+    test(function() local p=G.path({V(0,0,0),V(10,0,0),V(10,0,10)},true); local a=G.adaptive(p,10,0.15,0.03,1000); assert(#a&gt;math.ceil(p.length/10)+1); close(a[1],0); close(a[#a],p.length) end)
+    test(function() local p=G.path({V(0,0,0),V(0,0,-20)},false); local o={profile="rectangle",width=4,height=2,sides=16,step=5,angle=8,tolerance=0.05}; local plan=E.plan(p,o); assert(plan.vertices==20 and plan.triangles==36); close(plan.perimeter[5],12) end)
+    test(function() local q,closed=E.profile({profile="arch",width=4,height=2,sides=8}); assert(#q==9 and not closed) end)
+    test(function() local q,closed=E.profile({profile="0,0;0,2;2,2;2,0",width=4,height=2,sides=8}); assert(#q==4 and closed); assert(not pcall(E.profile,{profile="0,0;2,2;0,2;2,0",width=4,height=2,sides=8})) end)
     return n
 end
 return T
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX6"><Properties><string name="Name">MeshOutput</string><ProtectedString name="Source">-- Separate temporary preview and explicitly authorized asset output.
+local A=game:GetService("AssetService")
+local Studio=game:GetService("StudioService")
+local O={}
+function O.create(mesh,anchor,o,name,source,preview,canContinue)
+    local part
+    local ok,result=pcall(function()
+        assert(canContinue(),"Editor closed or play testing started")
+        local center,size=mesh:GetCenter(),mesh:GetSize()
+        local content,id
+        if preview then
+            content=Content.fromObject(mesh)
+        else
+            local creatorId=game.CreatorId
+            local creatorType=game.CreatorType==Enum.CreatorType.Group and Enum.AssetCreatorType.Group or Enum.AssetCreatorType.User
+            if creatorId&lt;=0 then creatorId=Studio:GetUserId(); creatorType=Enum.AssetCreatorType.User end
+            assert(creatorId&gt;0,"Cannot determine asset owner")
+            local status,assetId=A:CreateAssetAsync(mesh,Enum.AssetType.Mesh,{
+                CreatorId=creatorId,CreatorType=creatorType,Name="PathForge "..name,
+                Description="Procedural mesh generated by PathForge"
+            })
+            assert(status==Enum.CreateAssetResult.Success and type(assetId)=="number","Mesh upload failed: "..tostring(assetId))
+            id=assetId; warn("[PathForge] Uploaded mesh asset ID:",id)
+            assert(canContinue(),"Editor closed or play test started; uploaded asset ID: "..tostring(id))
+            content=Content.fromUri("rbxassetid://"..tostring(id))
+        end
+        local fidelity=preview and Enum.CollisionFidelity.Box or Enum.CollisionFidelity[o.fidelity or "Default"]
+        assert(fidelity,"Invalid collision fidelity")
+        local created,meshPart=pcall(function() return A:CreateMeshPartAsync(content,{CollisionFidelity=fidelity}) end)
+        assert(created and meshPart,"Mesh creation failed (asset "..tostring(id).."): "..tostring(meshPart))
+        part=meshPart
+        assert(canContinue(),"Editor closed or play testing started")
+        if id then part:SetAttribute("PathForgeMeshAssetId",id) end
+        part.Name=name
+        part.Size=Vector3.new(math.max(size.X,0.001),math.max(size.Y,0.001),math.max(size.Z,0.001))
+        part.CFrame=CFrame.new(anchor+center)
+        part.Anchored=true; part.CanCollide=not preview and o.collide; part.CanTouch=false
+        if preview then part.CanQuery=false; part.Archivable=false end
+        if source then
+            part.Material=source.Material; part.MaterialVariant=source.MaterialVariant
+            part.Color=source.Color; part.Transparency=source.Transparency; part.Reflectance=source.Reflectance
+            part.TextureContent=source.TextureContent
+            part.DoubleSided=source.DoubleSided; part.CastShadow=source.CastShadow
+            for _,child in ipairs(source:GetChildren()) do
+                if child:IsA("SurfaceAppearance") and child.Archivable then child:Clone().Parent=part end
+            end
+        end
+        return part
+    end)
+    if not ok then if part then part:Destroy() end; error(result,0) end
+    return result
+end
+return O
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX7"><Properties><string name="Name">Extrude</string><ProtectedString name="Source">-- Sweeps a closed convex or open cross-section along an arc-length spline.
+-- All mesh vertices are shared between rings; UV and normal seams are independent.
+local G=require(script.Parent.Geometry)
+local A=game:GetService("AssetService")
+local O=require(script.Parent.MeshOutput)
+local Materials=require(script.Parent.Materials)
+local E={}
+local function cross(a,b) return a.X*b.Y-a.Y*b.X end
+local function finite(x) return x and x==x and math.abs(x)&lt;=1000 end
+function E.profile(o)
+    local profile={}
+    local w,h=o.width,o.height
+    assert(w&gt;0 and h&gt;0,"Extrude width and height must be positive")
+    local closed=true
+    if o.profile=="rectangle" then
+        profile={Vector2.new(-w/2,-h/2),Vector2.new(w/2,-h/2),Vector2.new(w/2,h/2),Vector2.new(-w/2,h/2)}
+    elseif o.profile=="circle" then
+        for i=0,o.sides-1 do local a=2*math.pi*i/o.sides; profile[#profile+1]=Vector2.new(w/2*math.cos(a),h/2*math.sin(a)) end
+    elseif o.profile=="arch" then
+        closed=false
+        for i=0,o.sides do local a=math.pi*i/o.sides; profile[#profile+1]=Vector2.new(w/2*math.cos(a),h*math.sin(a)) end
+    else
+        -- Custom convex polygon, normalized only by the supplied coordinates in studs.
+        for pair in string.gmatch(o.profile,"[^;]+") do
+            local x,y=pair:match("^%s*([^,]+),([^,]+)%s*$")
+            x=tonumber(x); y=tonumber(y)
+            assert(finite(x) and finite(y),"Custom profile: x,y;x,y;... (studs)")
+            profile[#profile+1]=Vector2.new(x,y)
+        end
+        assert(#profile&gt;=3 and #profile&lt;=64,"Custom profile needs 3–64 points")
+        local area=0
+        for i=1,#profile do area+=cross(profile[i],profile[i%#profile+1]) end
+        assert(math.abs(area)&gt;1e-5,"Profile area is zero")
+        if area&lt;0 then local rev={}; for i=#profile,1,-1 do rev[#rev+1]=profile[i] end; profile=rev end
+        -- Strictly convex, ordered polygon: every other vertex left of every edge.
+        for i=1,#profile do
+            local j=i%#profile+1
+            local a,b=profile[i],profile[j]
+            assert((b-a).Magnitude&gt;1e-4,"Duplicate profile point")
+            for k=1,#profile do
+                if k~=i and k~=j then assert(cross(b-a,profile[k]-a)&gt;1e-6,"Profile must be a strictly convex ordered polygon") end
+            end
+        end
+    end
+    return profile,closed
+end
+function E.plan(path,o)
+    local profile,closed=E.profile(o)
+    local samples=G.adaptive(path,o.step,math.rad(o.angle),o.tolerance,2000)
+    local n=#profile
+    local edges=closed and n or n-1
+    local triangles=(#samples-1)*edges*2+(closed and 2*(n-2) or 0)
+    assert(#samples*n&lt;=60000 and triangles&lt;=20000,"Mesh budget exceeded; increase step/tolerance or reduce profile sides")
+    local perimeter={0}
+    for i=1,edges do perimeter[i+1]=perimeter[i]+(profile[i%n+1]-profile[i]).Magnitude end
+    return {profile=profile,closed=closed,samples=samples,edges=edges,triangles=triangles,vertices=#samples*n,perimeter=perimeter}
+end
+function E.build(path,o,source,preview,canContinue,style)
+    local plan=E.plan(path,o)
+    local mesh,part
+    local ok,result=pcall(function()
+        mesh=A:CreateEditableMesh(); assert(mesh,"EditableMesh memory budget unavailable")
+        local rings,uvs,normals={},{},{}
+        local anchor=G.at(path,0)
+        local roll=math.rad(o.roll)
+        local co,si=math.cos(roll),math.sin(roll)
+        local n=#plan.profile
+        for i,d in ipairs(plan.samples) do
+            local pos,_,r,u=G.frame(path,d)
+            local right,up=r*co+u*si,u*co-r*si
+            rings[i]={}; uvs[i]={}; normals[i]={}
+            for j,q in ipairs(plan.profile) do
+                rings[i][j]=mesh:AddVertex(pos-anchor+right*q.X+up*q.Y+Vector3.new(0,o.offset,0))
+            end
+            for j=1,plan.edges+1 do uvs[i][j]=mesh:AddUV(Vector2.new(d/o.uvLength,plan.perimeter[j]/o.uvWidth)) end
+            -- Per-edge smoothing along length, with a hard profile corner.
+            for j=1,plan.edges do
+                local nextJ=j%n+1
+                local e=plan.profile[nextJ]-plan.profile[j]
+                local normal=(right*e.Y-up*e.X).Unit
+                normals[i][j]=mesh:AddNormal(normal)
+            end
+        end
+        local function tri(a,b,c,ua,ub,uc,na,nb,nc)
+            local f=mesh:AddTriangle(a,b,c)
+            mesh:SetFaceUVs(f,{ua,ub,uc}); mesh:SetFaceNormals(f,{na,nb,nc})
+        end
+        for i=1,#rings-1 do
+            for j=1,plan.edges do
+                local k=j%n+1
+                local a,b,c,d=rings[i][j],rings[i][k],rings[i+1][k],rings[i+1][j]
+                local ua,ub,uc,ud=uvs[i][j],uvs[i][j+1],uvs[i+1][j+1],uvs[i+1][j]
+                local na,nb=normals[i][j],normals[i+1][j]
+                -- Local right × up = -forward; this winding points outward.
+                tri(a,d,c,ua,ud,uc,na,nb,nb)
+                tri(a,c,b,ua,uc,ub,na,nb,na)
+            end
+        end
+        if plan.closed then
+            for _,i in ipairs({1,#rings}) do
+                local _,f=G.frame(path,plan.samples[i])
+                local normal=mesh:AddNormal(i==1 and -f or f)
+                local capUV={}
+                for j,q in ipairs(plan.profile) do capUV[j]=mesh:AddUV(Vector2.new(q.X/o.uvLength,q.Y/o.uvWidth)) end
+                for j=2,n-1 do
+                    local b,c=j,j+1
+                    if i==#rings then b,c=c,b end
+                    tri(rings[i][1],rings[i][b],rings[i][c],capUV[1],capUV[b],capUV[c],normal,normal,normal)
+                end
+            end
+        end
+        mesh:RemoveUnused()
+        part=O.create(mesh,anchor,o,"ExtrudedMesh",source,preview,canContinue)
+        if not source then
+            part.Material=Enum.Material.Concrete; part.Color=Color3.fromRGB(150,150,150)
+            Materials.apply(part,style)
+        end
+        if not plan.closed then part.DoubleSided=true; part.CanCollide=false end
+        part:SetAttribute("PathForgeTriangles",plan.triangles)
+        part:SetAttribute("PathForgeVertices",plan.vertices)
+        return part
+    end)
+    if not ok then if part then part:Destroy() end; if mesh then mesh:Destroy() end; error(result,0) end
+    if preview then return result,mesh end
+    mesh:Destroy()
+    return result
+end
+return E
 </ProtectedString></Properties></Item></Item></roblox>

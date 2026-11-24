@@ -1,20 +1,18 @@
 # Roadmap
 
-## v0.3 stability preview
-- [x] Explicit asset-backed mesh workflow
-- [x] Transported frames and reusable guide instances
-- [x] Local-coordinate path metadata and stale-target checks
-- [x] In-Studio geometry test command
-- [ ] Execute Studio installation, mesh persistence, undo and failure tests
+## v0.4 geometry preview
+- [x] Continuous profile extrusion
+- [x] Adaptive path sampling and distance-based UV coordinates
+- [x] Temporary mesh preview separated from asset upload
+- [x] Geometry budgets, selectable collision fidelity
+- [ ] Studio execution and save/reopen verification
+- [ ] Live mesh preview and round-profile normal smoothing
+- [ ] Imported mesh subdivision and mesh chunking
 
-## v0.4 — Geometry
-- [ ] Continuous profile extrusion and adaptive subdivision
-- [ ] Distance-based UV mapping
-- [ ] Geometry budget and chunking
-
-## Later
-- [ ] Viewport handles, live preview and context-aware inspector
-- [ ] Asset/material libraries and reusable generation rules
+## Next
+- [ ] Viewport handles and context-aware inspector
+- [ ] Layered spline generation (multiple generators on a single path)
+- [ ] Asset/material libraries and mesh caching
 - [ ] Scatter, brush placement and terrain-aware editing
 
-No release dates are committed. Priorities depend on Studio validation.
+No release dates are committed.

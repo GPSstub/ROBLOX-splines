@@ -100,7 +100,31 @@ function G.frame(path,d)
     end
     local f=tangent(path,d)
     local r=transport(cache[lo].r,cache[lo].f,f)
-    return G.at(path,d),f,r,r:Cross(f).Unit
+    -- Adaptive samples refine by chord error and tangent angle. Explicit polyline
+-- corners remain present; refinement is bounded, so difficult paths fail safely.
+function G.adaptive(path,step,maxAngle,tolerance,limit)
+    assert(step>0 and maxAngle>0 and tolerance>0 and limit>=1,"Invalid adaptive settings")
+    local base=G.segments(path,step,limit)
+    local out={base[1]}
+    local function split(a,b,depth)
+        local pa,pb=G.at(path,a),G.at(path,b)
+        local mid=(a+b)/2
+        local pm=G.at(path,mid)
+        local chordError=(pm-(pa+pb)/2).Magnitude
+        local va,vb=pm-pa,pb-pm
+        local angle=0
+        if va.Magnitude>EPS and vb.Magnitude>EPS then angle=math.acos(math.clamp(va.Unit:Dot(vb.Unit),-1,1)) end
+        if not path.linear and (chordError>tolerance or angle>maxAngle) and depth<10 and b-a>0.025 then
+            split(a,mid,depth+1); split(mid,b,depth+1)
+        else
+            assert(#out<=limit,"Adaptive segment budget exceeded")
+            out[#out+1]=b
+        end
+    end
+    for i=1,#base-1 do split(base[i],base[i+1],0) end
+    return out
+end
+return G.at(path,d),f,r,r:Cross(f).Unit
 end
 -- Continuous geometry includes both endpoints and distributes segment length evenly.
 function G.segments(path,step,limit)

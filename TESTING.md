@@ -1,6 +1,6 @@
 # Studio acceptance checklist (not executed)
 
-- Install local plugin in empty baseplate and click Run geometry self-tests (8 cases).
+- Install local plugin in empty baseplate and click Run geometry self-tests (13 cases).
 - Generate each built-in preset and Custom, save/reopen, load and update.
 - Capture two materials, including a MaterialVariant and tiled texture. Reset one slot.
 - Move and rotate a generated model, reload its path, regenerate; check local coordinates. Try generating after external move/undo without reload; expect rejection.
@@ -10,3 +10,10 @@
 - Trigger failure (invalid asset, unavailable mesh API, history unavailable); old output must remain. An already uploaded mesh may remain on Roblox even if subsequent steps fail.
 - Test undo/redo and reload, v0.1/v0.2 metadata migration, missing source, sharp curves and vertical paths.
 - Compare visual output against reference assets before production deployment.
+
+## v0.4 mesh acceptance (not executed)
+- Preview a straight rectangle, curved circle, open arch and custom convex polygon. Check counts, normals, caps, material and distance-based texture scale.
+- Invalid polygon, excessive budgets and invalid dimensions must fail without changing saved output.
+- Preview both mesh modes: no upload, no collision, removed on edit, close or play. Generate without authorization must fail.
+- Upload one mesh after explicit authorization. Verify owner, asset ID, save/reopen, collision fidelity and previous output after failure.
+- Confirm open arch is double-sided and non-collidable, including after upload. Test tight curves for self-intersection.
