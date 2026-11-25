@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+### Added
+- Korean UI translation (`src/Locale.lua`), chosen automatically from Studio's language; English remains the default.
+- `tests/run.py`: runs the geometry self-tests, regression checks, translation coverage and package parity outside Studio; GitHub Actions workflow.
+- `tools/build_rbxmx.py`: rebuilds `PathForge.rbxmx` from `src/`.
+
+### Fixed
+- `G.adaptive` was defined inside `G.frame`, so Extrude could fail with a nil call on a fresh plugin load.
+
 ## v0.5 — 2026-11-24
 ### Added
 - Up to 12 repeat layers on one path, with independent asset, spacing, lateral/vertical offset, rotation, enabled and collision settings.

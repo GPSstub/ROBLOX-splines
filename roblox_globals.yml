@@ -1,0 +1,29 @@
+# Minimal Roblox Studio globals for selene (no network needed to generate).
+# Values are typed loosely; selene still checks unknown globals, shadowing,
+# unused variables, unreachable code and similar mistakes.
+base: luau
+globals:
+  # Luau's assert message is optional (SelfTest uses bare asserts).
+  assert:
+    args:
+      - type: any
+      - required: false
+        type: any
+  game: {any: true}
+  workspace: {any: true}
+  plugin: {any: true}
+  script: {any: true}
+  Enum: {any: true}
+  Instance: {any: true}
+  Vector3: {any: true}
+  Vector2: {any: true}
+  CFrame: {any: true}
+  Color3: {any: true}
+  UDim: {any: true}
+  UDim2: {any: true}
+  Faces: {any: true}
+  Content: {any: true}
+  RaycastParams: {any: true}
+  DockWidgetPluginGuiInfo: {any: true}
+  task: {any: true}
+  warn: {args: [{type: "..."}]}

@@ -1,0 +1,5 @@
+std = "roblox_globals"
+
+[lints]
+# The codebase intentionally uses compact one-line statements.
+multiple_statements = "allow"
