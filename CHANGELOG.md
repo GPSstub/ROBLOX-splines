@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8 — 2026-11-25
+### Added
+- Library tab, stored in `ServerStorage > PathForgeLibrary` so it saves and travels with the place:
+  - 21 built-in material presets (asphalt, concrete, brick, wood, rusty metal, glass, painted lines…) applied to any material slot, plus your own saved materials.
+  - Asset library: add a selected model (scripts and joints stripped) and use it as a Custom asset or repeat layer. Older generation snapshots in `PathForgeAssets` are listed too.
+  - Recipes: save the whole generator stack, material slots and layer settings (without points) under a name and load it onto any new path.
+- Every library change is one Studio undo step.
+
 ## v0.7 — 2026-11-25
 ### Added
 - Extrude chunking: long sweeps are split into up to 8 meshes (each within 60,000 vertices / 20,000 triangles). Chunk seams share exact positions and UVs; caps only at the two ends.

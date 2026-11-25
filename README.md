@@ -1,4 +1,4 @@
-# PathForge / ROBLOX-splines v0.7
+# PathForge / ROBLOX-splines v0.8
 
 Studio-only procedural environment toolkit. No runtime scripts or automatic asset uploads.
 
@@ -19,7 +19,8 @@ The editor UI follows Studio's language: Korean (한국어) when Studio is set t
 2. Choose Rail/Road/Wall/Fence/Pipe (Part presets), Custom (repeat static source models), Deform (bend one static MeshPart), or Extrude (sweep a profile). Use Add generator to stack more generators on the same path (max 8); Previous/Next generator switches which one the fields edit. Each generator can be disabled without deleting it.
 3. Capture materials from selected parts into independent slots. For Extrude choose ExtrudedMesh slot, or select a MeshPart and click Use selected MeshPart appearance / Extrude to preserve its PBR maps and texture. This copies appearance, not source geometry.
 4. Extrude profiles: `rectangle`, `circle` (ellipse using width/height), `arch` (open double-sided shell, non-collidable), or ordered strictly convex custom coordinates such as `-2,-1;2,-1;2,1;-2,1` in studs. Set maximum segment length, turn angle, chord tolerance, UV length and perimeter per tile, and roll. Custom coordinates ignore width/height except validation. Rectangular and polygon corners are hard; round profiles use smooth cross-section normals.
-5. Layers tab: select any static source model in Explorer, Add selected model as repeat layer, set spacing, local side/height, yaw, roll, collision, and Apply layer settings. Add multiple independent overlays (up to 12). Disabled layers do not generate.
+5. Library tab: browse 21 built-in material presets and your saved materials and apply one to the current slot; save materials, models (as clean asset copies) and recipes (generator stack + layers, no points) by name. Everything is kept in ServerStorage > PathForgeLibrary.
+6. Layers tab: select any static source model in Explorer, Add selected model as repeat layer, set spacing, local side/height, yaw, roll, collision, and Apply layer settings. Add multiple independent overlays (up to 12). Disabled layers do not generate.
 6. Build tab: Preview now or enable Auto preview (debounced by 0.35 seconds, after dragging stops). Every generator and repeat layer previews without upload (3,000 parts for generators, 1,000 for layers).
 7. To commit meshes, toggle Authorize mesh uploads for next Generate to ON, then Generate/update. Each enabled Extrude/Deform generator uploads one mesh; Part-based generators are built first so a budget error stops before any upload. The mesh is uploaded to the current place owner (or Studio user in an unpublished place); permissions and moderation may prevent it. Asset uploads cannot be undone by Studio Undo. Other modes do not upload.
 8. Load selected saved path to edit again. Reload after moving or externally changing a generated path. Existing v0.1/v0.2 world-space metadata remains readable.

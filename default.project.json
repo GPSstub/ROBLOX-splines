@@ -52,6 +52,9 @@
     },
     "Cache": {
       "$path": "src/Cache.lua"
+    },
+    "Library": {
+      "$path": "src/Library.lua"
     }
   }
 }

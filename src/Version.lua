@@ -1,2 +1,2 @@
 -- Single source of the plugin version shown in the UI and written to saves.
-return {FULL="0.7.0",SHORT="0.7"}
+return {FULL="0.8.0",SHORT="0.8"}

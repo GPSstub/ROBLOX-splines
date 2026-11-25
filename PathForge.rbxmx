@@ -14,6 +14,7 @@ local Persist=require(script.Parent.Persist)
 local Ui=require(script.Parent.Ui)
 local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
+local Library=require(script.Parent.Library)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -196,7 +197,7 @@ end
 -- Header / tabs --------------------------------------------------------------
 local title=label("PATHFORGE   /   "..Version.SHORT,28)
 title.Font=Enum.Font.GothamBold; title.TextSize=19
-ui.tabBar({"Path","Shape","Layers","Build"})
+ui.tabBar({"Path","Shape","Layers","Library","Build"})
 status=label("Create a path or load a saved PathForge model.",46)
 
 -- 01 Path --------------------------------------------------------------------
@@ -469,6 +470,103 @@ button("Remove selected layer",guarded(function()
 end))
 label("Each layer repeats its own source model along the same spline. Apply layer settings before preview or generation.",58,C.muted)
 
+-- 05 Library ----------------------------------------------------------------
+ui.section="Library"
+-- Library edits change ServerStorage, so each one is a single Studio undo step.
+local function recorded(name,fn)
+    editAllowed()
+    local rec=History:TryBeginRecording("PathForgeLibrary",name)
+    assert(rec,"Cannot start Studio undo recording. Try again.")
+    local ok,err=pcall(fn)
+    History:FinishRecording(rec,ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not ok then error(err,0) end
+end
+local libIndex={material=1,asset=1,recipe=1}
+local materialLabel,assetLibLabel,recipeLabel
+local function libLists()
+    return Library.materials(Storage),Library.assets(Storage),Library.recipes(Storage)
+end
+local function syncLibrary()
+    local mats,assets,recipes=libLists()
+    for key,list in pairs({material=mats,asset=assets,recipe=recipes}) do
+        libIndex[key]=#list&gt;0 and math.clamp(libIndex[key],1,#list) or 0
+    end
+    local m=mats[libIndex.material]
+    materialLabel.Text=m and string.format("%d / %d  |  %s%s",libIndex.material,#mats,T(m.name),m.builtin and "" or " ★") or T("Library is empty")
+    local a=assets[libIndex.asset]
+    assetLibLabel.Text=a and string.format("%d / %d  |  %s",libIndex.asset,#assets,a.Name) or T("Library is empty")
+    local r=recipes[libIndex.recipe]
+    recipeLabel.Text=r and string.format("%d / %d  |  %s",libIndex.recipe,#recipes,r.Name) or T("No saved recipes")
+end
+local function step(key,delta)
+    local mats,assets,recipes=libLists()
+    local n=#({material=mats,asset=assets,recipe=recipes})[key]
+    if n&gt;0 then libIndex[key]=(libIndex[key]-1+delta)%n+1 end
+    syncLibrary()
+end
+label("05   LIBRARY / SAVED WITH THIS PLACE",22,C.muted)
+input("libName","Name for saving",""):SetAttribute("NoPreviewReset",true)
+label("05A  MATERIALS",22,C.muted)
+materialLabel=label("Library is empty",24)
+row({{"Previous material",function() step("material",-1) end},{"Next material",function() step("material",1) end}})
+button("Apply material to current slot",guarded(function()
+    local mats=libLists()
+    local m=assert(mats[libIndex.material],"Library is empty")
+    local slot=assert(P.SLOTS[entry().o.preset][materialSlot],"No material slots for this generator")
+    entry().styles[slot]=table.clone(m.style); clearMeshPreview(); syncMaterials()
+    say("Material applied to the current slot. Generate to apply.")
+end),true)
+button("Save current slot to library",guarded(function()
+    local slot=assert(P.SLOTS[entry().o.preset][materialSlot],"No material slots for this generator")
+    local style=assert(entry().styles[slot],"Capture or apply a material to this slot first")
+    recorded("PathForge: Save material",function() Library.saveMaterial(Storage,fields.libName.Text,style) end)
+    syncLibrary(); say("Saved to the library.")
+end))
+label("05B  ASSETS",22,C.muted)
+assetLibLabel=label("Library is empty",24)
+row({{"Previous asset",function() step("asset",-1) end},{"Next asset",function() step("asset",1) end}})
+button("Add selected model to library",guarded(function()
+    local a=Selection:Get()[1]
+    assert(not preview or not a or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
+    local name=fields.libName.Text~="" and fields.libName.Text or (a and a.Name)
+    recorded("PathForge: Add asset",function() Library.addAsset(Storage,a,name) end)
+    syncLibrary(); say("Saved to the library.")
+end))
+row({
+    {"Use as Custom asset",guarded(function()
+        local _,assets=libLists(); local a=assert(assets[libIndex.asset],"Library is empty")
+        local e=entry(); e.source=a
+        if e.o.preset~="Custom" then e.o.preset="Custom"; applyDefaults() end
+        materialSlot=1; resetUpload(); clearMeshPreview(); syncButtons(); syncMaterials()
+        say("Asset selected. A reusable snapshot is stored when generated.")
+    end)},
+    {"Add as repeat layer",guarded(function()
+        local _,assets=libLists(); local a=assert(assets[libIndex.asset],"Library is empty")
+        assert(#repeatLayers&lt;Layers.MAX_LAYERS,"Maximum 12 repeat layers")
+        repeatLayers[#repeatLayers+1]={source=a,spacing=5,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true}
+        layerIndex=#repeatLayers; syncLayers(); clearMeshPreview()
+        say("Layer added. Adjust it in the Layers tab.")
+    end)},
+})
+label("05C  RECIPES (GENERATORS + LAYERS, NO POINTS)",22,C.muted)
+recipeLabel=label("No saved recipes",24)
+row({{"Previous recipe",function() step("recipe",-1) end},{"Next recipe",function() step("recipe",1) end}})
+button("Save current setup as recipe",guarded(function()
+    storeFields()
+    recorded("PathForge: Save recipe",function() Library.saveRecipe(Storage,fields.libName.Text,entries,repeatLayers,smooth) end)
+    syncLibrary(); say("Saved to the library.")
+end),true)
+button("Load recipe into draft",guarded(function()
+    local _,_,recipes=libLists(); local r=assert(recipes[libIndex.recipe],"No saved recipes")
+    local loadedEntries,loadedLayers,loadedSmooth=Library.loadRecipe(r)
+    entries=loadedEntries; current=1; materialSlot=1
+    repeatLayers=loadedLayers; layerIndex=#repeatLayers&gt;0 and 1 or 0
+    smooth=loadedSmooth
+    loadFields(); resetUpload(); clearMeshPreview(); syncLayers(); syncMaterials(); syncButtons(); refreshPreview()
+    say("Recipe loaded into the draft. Points are unchanged; Generate to apply.")
+end))
+label("Materials, assets and recipes are stored in ServerStorage &gt; PathForgeLibrary and travel with this place. ★ marks your own materials.",58,C.muted)
+
 -- Commit / load ----------------------------------------------------------------
 local function commit(allowUpload)
     editAllowed(); stopMode(); storeFields()
@@ -657,8 +755,11 @@ local runConnection=RunService.Heartbeat:Connect(function()
 end)
 tool.Click:Connect(function() widget.Enabled=not widget.Enabled end)
 plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
-for _,field in pairs(fields) do field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
-loadFields(); syncButtons(); syncMaterials(); syncLayers(); ui.select("Path"); refreshLabel(); if widget.Enabled then refreshPreview() end
+for _,field in pairs(fields) do
+    if not field:GetAttribute("NoPreviewReset") then field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
+end
+ui.tabs.Library.Activated:Connect(syncLibrary)
+loadFields(); syncButtons(); syncMaterials(); syncLayers(); syncLibrary(); ui.select("Path"); refreshLabel(); if widget.Enabled then refreshPreview() end
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX2"><Properties><string name="Name">Geometry</string><ProtectedString name="Source">-- Pure path math; uses only Roblox Vector3 arithmetic.
 local G = {}
@@ -1487,6 +1588,47 @@ local ko={
     ["JSON object keys must be strings"]="JSON 객체 키는 문자열이어야 해요",
     ["JSON text expected"]="JSON 텍스트가 필요해요",
     ["Profile too detailed for one mesh; reduce profile sides"]="단면이 너무 세밀해서 메시 하나에 안 들어가요. 단면 분할 수를 줄이세요",
+
+    -- v0.8 library
+    ["Library"]="라이브러리",
+    ["05   LIBRARY / SAVED WITH THIS PLACE"]="05   라이브러리 / 이 플레이스에 저장",
+    ["05A  MATERIALS"]="05A  재질", ["05B  ASSETS"]="05B  에셋",
+    ["05C  RECIPES (GENERATORS + LAYERS, NO POINTS)"]="05C  레시피 (생성기 + 레이어, 점 제외)",
+    ["Name for saving"]="저장할 이름",
+    ["Previous material"]="이전 재질", ["Next material"]="다음 재질",
+    ["Previous asset"]="이전 에셋", ["Next asset"]="다음 에셋",
+    ["Previous recipe"]="이전 레시피", ["Next recipe"]="다음 레시피",
+    ["Apply material to current slot"]="현재 슬롯에 재질 적용",
+    ["Save current slot to library"]="현재 슬롯을 라이브러리에 저장",
+    ["Add selected model to library"]="선택한 모델을 라이브러리에 추가",
+    ["Use as Custom asset"]="커스텀 에셋으로 사용",
+    ["Add as repeat layer"]="반복 레이어로 추가",
+    ["Save current setup as recipe"]="현재 설정을 레시피로 저장",
+    ["Load recipe into draft"]="레시피를 초안에 불러오기",
+    ["Library is empty"]="라이브러리가 비어 있어요",
+    ["No saved recipes"]="저장된 레시피가 없어요",
+    ["Saved to the library."]="라이브러리에 저장했어요.",
+    ["Material applied to the current slot. Generate to apply."]="현재 슬롯에 재질을 적용했어요. 생성하면 반영돼요.",
+    ["Layer added. Adjust it in the Layers tab."]="레이어를 추가했어요. 레이어 탭에서 조정하세요.",
+    ["Recipe loaded into the draft. Points are unchanged; Generate to apply."]="레시피를 초안에 불러왔어요. 점은 그대로예요. 생성하면 반영돼요.",
+    ["Materials, assets and recipes are stored in ServerStorage &gt; PathForgeLibrary and travel with this place. ★ marks your own materials."]="재질, 에셋, 레시피는 ServerStorage &gt; PathForgeLibrary에 저장되고 이 플레이스와 함께 다녀요. ★는 직접 저장한 재질이에요.",
+    ["Capture or apply a material to this slot first"]="먼저 이 슬롯에 재질을 가져오거나 적용하세요",
+    ["Enter a library name"]="라이브러리 이름을 입력하세요",
+    ["Library names must be 1–50 characters"]="라이브러리 이름은 1~50자여야 해요",
+    ["Library names cannot contain slashes"]="라이브러리 이름에는 / 나 \\ 를 쓸 수 없어요",
+    ["Library is full (200 items)"]="라이브러리가 가득 찼어요 (200개)",
+    ["Invalid material style"]="재질 설정이 잘못됐어요",
+    ["PathForgeLibrary must be a Folder"]="PathForgeLibrary는 Folder여야 해요",
+    ["Recipe data is missing"]="레시피 데이터가 없어요",
+    ["Unsupported recipe format"]="지원하지 않는 레시피 형식이에요",
+    ["Asphalt (dark)"]="아스팔트 (어두움)", ["Asphalt (worn)"]="아스팔트 (낡음)",
+    ["Concrete (light)"]="콘크리트 (밝음)", ["Concrete (dark)"]="콘크리트 (어두움)",
+    ["Pavement"]="포장 도로", ["Brick (red)"]="벽돌 (빨강)", ["Cobblestone"]="자갈길",
+    ["Wood (oak)"]="나무 (참나무)", ["Wood (dark)"]="나무 (어두움)", ["Wood planks"]="나무 판자",
+    ["Steel"]="강철", ["Rusty metal"]="녹슨 금속", ["Diamond plate"]="체크 철판",
+    ["Marble (white)"]="대리석 (흰색)", ["Granite"]="화강암", ["Glass (clear)"]="유리 (투명)",
+    ["Grass"]="잔디", ["Sand"]="모래", ["Neon (blue)"]="네온 (파랑)",
+    ["Painted line (white)"]="도색 선 (흰색)", ["Painted line (yellow)"]="도색 선 (노랑)",
 }
 
 -- Formatted messages: Lua pattern -&gt; function returning the Korean text.
@@ -1536,7 +1678,7 @@ end
 return Locale
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">Version</string><ProtectedString name="Source">-- Single source of the plugin version shown in the UI and written to saves.
-return {FULL="0.7.0",SHORT="0.7"}
+return {FULL="0.8.0",SHORT="0.8"}
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX11"><Properties><string name="Name">Json</string><ProtectedString name="Source">-- Small deterministic JSON codec (sorted object keys). Used for saved settings,
 -- recipes and cache keys so the same input always produces the same text.
@@ -2199,4 +2341,202 @@ function C.pointsKey(points,extra)
     return Json.encode({p=flat,x=extra})
 end
 return C
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX18"><Properties><string name="Name">Library</string><ProtectedString name="Source">-- Material presets, a per-place material/asset library and reusable recipes.
+-- Everything is stored in ServerStorage.PathForgeLibrary so it saves with the place.
+local P=require(script.Parent.Presets)
+local Layers=require(script.Parent.Layers)
+local Assets=require(script.Parent.Assets)
+local Json=require(script.Parent.Json)
+local L={RECIPE_FORMAT=1,MAX_ITEMS=200}
+
+local function style(material,rgb,extra)
+    local s={material=material,variant="",color={rgb[1]/255,rgb[2]/255,rgb[3]/255},transparency=0,reflectance=0,textures={}}
+    for k,v in pairs(extra or {}) do s[k]=v end
+    return s
+end
+-- Built-in material presets (names are English keys, translated in the UI).
+L.BUILTIN={
+    {"Asphalt (dark)",style("Asphalt",{54,58,63})},
+    {"Asphalt (worn)",style("Asphalt",{96,98,100})},
+    {"Concrete (light)",style("Concrete",{170,170,165})},
+    {"Concrete (dark)",style("Concrete",{99,99,95})},
+    {"Pavement",style("Pavement",{140,138,132})},
+    {"Brick (red)",style("Brick",{141,72,55})},
+    {"Cobblestone",style("Cobblestone",{120,115,108})},
+    {"Wood (oak)",style("Wood",{150,110,70})},
+    {"Wood (dark)",style("Wood",{91,67,46})},
+    {"Wood planks",style("WoodPlanks",{160,120,80})},
+    {"Steel",style("Metal",{103,110,119})},
+    {"Rusty metal",style("CorrodedMetal",{125,80,55})},
+    {"Diamond plate",style("DiamondPlate",{150,155,160})},
+    {"Marble (white)",style("Marble",{230,230,225})},
+    {"Granite",style("Granite",{110,105,100})},
+    {"Glass (clear)",style("Glass",{200,225,235},{transparency=0.5,reflectance=0.2})},
+    {"Grass",style("Grass",{90,140,60})},
+    {"Sand",style("Sand",{210,190,140})},
+    {"Neon (blue)",style("Neon",{60,160,255})},
+    {"Painted line (white)",style("SmoothPlastic",{220,220,210})},
+    {"Painted line (yellow)",style("SmoothPlastic",{233,184,62})},
+}
+
+function L.validName(name)
+    assert(type(name)=="string","Enter a library name")
+    name=name:match("^%s*(.-)%s*$")
+    assert(#name&gt;=1 and #name&lt;=50,"Library names must be 1–50 characters")
+    assert(not name:find("[%c/\\]"),"Library names cannot contain slashes")
+    return name
+end
+
+-- Validates a material style table (shape written by Materials.capture).
+function L.validStyle(s)
+    assert(type(s)=="table" and type(s.material)=="string" and Enum.Material[s.material],"Invalid material style")
+    assert(type(s.color)=="table" and #s.color==3,"Invalid material style")
+    for _,c in ipairs(s.color) do assert(type(c)=="number" and c&gt;=0 and c&lt;=1,"Invalid material style") end
+    s.variant=type(s.variant)=="string" and s.variant or ""
+    s.transparency=math.clamp(tonumber(s.transparency) or 0,0,1)
+    s.reflectance=math.clamp(tonumber(s.reflectance) or 0,0,1)
+    s.textures=type(s.textures)=="table" and s.textures or {}
+    return s
+end
+
+-- Library folders ------------------------------------------------------------
+-- folder(storage, create): returns ServerStorage.PathForgeLibrary/&lt;kind&gt;, optionally creating it.
+function L.folder(storage,kind,create)
+    local root=storage:FindFirstChild("PathForgeLibrary")
+    if not root then
+        if not create then return nil end
+        root=Instance.new("Folder"); root.Name="PathForgeLibrary"; root.Parent=storage
+    end
+    assert(root:IsA("Folder"),"PathForgeLibrary must be a Folder")
+    local f=root:FindFirstChild(kind)
+    if not f then
+        if not create then return nil end
+        f=Instance.new("Folder"); f.Name=kind; f.Parent=root
+    end
+    assert(f:IsA("Folder"),"PathForgeLibrary must be a Folder")
+    return f
+end
+local function sortedChildren(folder)
+    if not folder then return {} end
+    local list=folder:GetChildren()
+    table.sort(list,function(a,b) return a.Name:lower()&lt;b.Name:lower() end)
+    return list
+end
+
+-- Materials: built-ins first, then the place's saved materials ("My: name").
+function L.materials(storage)
+    local out={}
+    for _,b in ipairs(L.BUILTIN) do out[#out+1]={name=b[1],style=b[2],builtin=true} end
+    for _,v in ipairs(sortedChildren(L.folder(storage,"Materials",false))) do
+        if v:IsA("StringValue") then
+            local ok,s=pcall(function() return L.validStyle(Json.decode(v.Value)) end)
+            if ok then out[#out+1]={name=v.Name,style=s,builtin=false} end
+        end
+    end
+    return out
+end
+function L.saveMaterial(storage,name,s)
+    name=L.validName(name)
+    local folder=L.folder(storage,"Materials",true)
+    assert(#folder:GetChildren()&lt;L.MAX_ITEMS,"Library is full (200 items)")
+    local v=folder:FindFirstChild(name) or Instance.new("StringValue")
+    v.Name=name; v.Value=Json.encode(L.validStyle(table.clone(s))); v.Parent=folder
+    return v
+end
+
+-- Assets: valid Models/BaseParts stored in the library (and older generation snapshots).
+function L.assets(storage)
+    local out={}
+    local seen={}
+    local function scan(folder)
+        for _,a in ipairs(sortedChildren(folder)) do
+            if not seen[a] and pcall(Assets.count,a) then seen[a]=true; out[#out+1]=a end
+        end
+    end
+    scan(L.folder(storage,"Assets",false))
+    scan(storage:FindFirstChild("PathForgeAssets"))
+    return out
+end
+function L.addAsset(storage,source,name)
+    Assets.count(source)
+    local folder=L.folder(storage,"Assets",true)
+    assert(#folder:GetChildren()&lt;L.MAX_ITEMS,"Library is full (200 items)")
+    local c=Assets.clone(source)
+    c.Name=L.validName(name or source.Name)
+    c.Parent=folder
+    return c
+end
+
+-- Recipes: generator stack + layer settings (+ source references) without points.
+function L.encodeRecipe(entries,layers,smooth)
+    assert(#entries&gt;=1,"A path needs at least one generator")
+    local data={format=L.RECIPE_FORMAT,smooth=smooth,generators={},layers={}}
+    local refs={}
+    for i,e in ipairs(entries) do
+        local o=P.validate(table.clone(e.o))
+        data.generators[i]={o=o,styles=e.styles or {},enabled=e.enabled~=false}
+        if e.source then refs[string.format("G%02d",i)]=e.source end
+    end
+    for i,l in ipairs(layers or {}) do
+        Layers.validate(l)
+        data.layers[i]={spacing=l.spacing,side=l.side,height=l.height,yaw=l.yaw,roll=l.roll,enabled=l.enabled,collide=l.collide}
+        if l.source then refs[string.format("L%02d",i)]=l.source end
+    end
+    return Json.encode(data),refs
+end
+function L.decodeRecipe(text,refs)
+    local data=Json.decode(text)
+    assert(type(data)=="table" and data.format==L.RECIPE_FORMAT,"Unsupported recipe format")
+    assert(type(data.generators)=="table" and #data.generators&gt;=1 and #data.generators&lt;=8,"A path needs 1–8 generators")
+    local entries,layers={},{}
+    for i,g in ipairs(data.generators) do
+        local o=P.options(g.o and g.o.preset)
+        for k,v in pairs(g.o) do o[k]=v end
+        local styles={}
+        for slot,s in pairs(type(g.styles)=="table" and g.styles or {}) do styles[slot]=L.validStyle(s) end
+        entries[i]={o=P.validate(o),styles=styles,enabled=g.enabled~=false,source=refs[string.format("G%02d",i)]}
+    end
+    assert(#(data.layers or {})&lt;=Layers.MAX_LAYERS,"Maximum 12 repeat layers")
+    for i,l in ipairs(data.layers or {}) do
+        local layer=table.clone(l)
+        layer.source=refs[string.format("L%02d",i)]
+        Layers.validate(layer)
+        if not layer.source then layer.enabled=false end
+        layers[i]=layer
+    end
+    return entries,layers,data.smooth~=false
+end
+function L.saveRecipe(storage,name,entries,layers,smooth)
+    name=L.validName(name)
+    local text,refs=L.encodeRecipe(entries,layers,smooth)
+    local folder=L.folder(storage,"Recipes",true)
+    assert(#folder:GetChildren()&lt;L.MAX_ITEMS,"Library is full (200 items)")
+    local old=folder:FindFirstChild(name)
+    if old then old:Destroy() end
+    local recipe=Instance.new("Configuration"); recipe.Name=name
+    local v=Instance.new("StringValue"); v.Name="Data"; v.Value=text; v.Parent=recipe
+    for key,inst in pairs(refs) do
+        local ref=Instance.new("ObjectValue"); ref.Name=key; ref.Value=inst; ref.Parent=recipe
+    end
+    recipe.Parent=folder
+    return recipe
+end
+function L.recipes(storage)
+    local out={}
+    for _,r in ipairs(sortedChildren(L.folder(storage,"Recipes",false))) do
+        if r:FindFirstChild("Data") then out[#out+1]=r end
+    end
+    return out
+end
+function L.loadRecipe(recipe)
+    local data=recipe:FindFirstChild("Data")
+    assert(data and data:IsA("StringValue"),"Recipe data is missing")
+    local refs={}
+    for _,c in ipairs(recipe:GetChildren()) do
+        if c:IsA("ObjectValue") and c.Value then refs[c.Name]=c.Value end
+    end
+    return L.decodeRecipe(data.Value,refs)
+end
+return L
 </ProtectedString></Properties></Item></Item></roblox>

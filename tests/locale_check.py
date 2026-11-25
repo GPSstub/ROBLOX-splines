@@ -6,7 +6,7 @@ UI `.Text=T(...)` assignments, then runs Locale.t with Korean forced on.
 import pathlib, re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-CONTEXT = re.compile(r'\b(label|button|input|say|assert|error|T)\(|^\s*\{"[^"]+",')
+CONTEXT = re.compile(r'\b(label|button|input|say|assert|error|T|row)\(|^\s*\{"[^"]+",')
 LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 # Names that are only ever used internally (class names, attribute keys...).
 NOT_UI = {"PathForge"}
@@ -26,7 +26,8 @@ def ui_strings():
                     found.add(s)
     return sorted(found)
 
-TAB_AND_PRESET_NAMES = {"Path", "Shape", "Layers", "Build", "Rail", "Road", "Wall",
+TAB_AND_PRESET_NAMES = {"Path", "Shape", "Layers", "Library", "Build", "Pavement", "Steel",
+                        "Granite", "Grass", "Sand", "Cobblestone", "Rail", "Road", "Wall",
                         "Fence", "Pipe", "Custom", "Deform", "Extrude"}
 # Formatted strings built at runtime.
 SAMPLES = [

@@ -13,6 +13,7 @@ local Persist=require(script.Parent.Persist)
 local Ui=require(script.Parent.Ui)
 local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
+local Library=require(script.Parent.Library)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -195,7 +196,7 @@ end
 -- Header / tabs --------------------------------------------------------------
 local title=label("PATHFORGE   /   "..Version.SHORT,28)
 title.Font=Enum.Font.GothamBold; title.TextSize=19
-ui.tabBar({"Path","Shape","Layers","Build"})
+ui.tabBar({"Path","Shape","Layers","Library","Build"})
 status=label("Create a path or load a saved PathForge model.",46)
 
 -- 01 Path --------------------------------------------------------------------
@@ -468,6 +469,103 @@ button("Remove selected layer",guarded(function()
 end))
 label("Each layer repeats its own source model along the same spline. Apply layer settings before preview or generation.",58,C.muted)
 
+-- 05 Library ----------------------------------------------------------------
+ui.section="Library"
+-- Library edits change ServerStorage, so each one is a single Studio undo step.
+local function recorded(name,fn)
+    editAllowed()
+    local rec=History:TryBeginRecording("PathForgeLibrary",name)
+    assert(rec,"Cannot start Studio undo recording. Try again.")
+    local ok,err=pcall(fn)
+    History:FinishRecording(rec,ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not ok then error(err,0) end
+end
+local libIndex={material=1,asset=1,recipe=1}
+local materialLabel,assetLibLabel,recipeLabel
+local function libLists()
+    return Library.materials(Storage),Library.assets(Storage),Library.recipes(Storage)
+end
+local function syncLibrary()
+    local mats,assets,recipes=libLists()
+    for key,list in pairs({material=mats,asset=assets,recipe=recipes}) do
+        libIndex[key]=#list>0 and math.clamp(libIndex[key],1,#list) or 0
+    end
+    local m=mats[libIndex.material]
+    materialLabel.Text=m and string.format("%d / %d  |  %s%s",libIndex.material,#mats,T(m.name),m.builtin and "" or " ★") or T("Library is empty")
+    local a=assets[libIndex.asset]
+    assetLibLabel.Text=a and string.format("%d / %d  |  %s",libIndex.asset,#assets,a.Name) or T("Library is empty")
+    local r=recipes[libIndex.recipe]
+    recipeLabel.Text=r and string.format("%d / %d  |  %s",libIndex.recipe,#recipes,r.Name) or T("No saved recipes")
+end
+local function step(key,delta)
+    local mats,assets,recipes=libLists()
+    local n=#({material=mats,asset=assets,recipe=recipes})[key]
+    if n>0 then libIndex[key]=(libIndex[key]-1+delta)%n+1 end
+    syncLibrary()
+end
+label("05   LIBRARY / SAVED WITH THIS PLACE",22,C.muted)
+input("libName","Name for saving",""):SetAttribute("NoPreviewReset",true)
+label("05A  MATERIALS",22,C.muted)
+materialLabel=label("Library is empty",24)
+row({{"Previous material",function() step("material",-1) end},{"Next material",function() step("material",1) end}})
+button("Apply material to current slot",guarded(function()
+    local mats=libLists()
+    local m=assert(mats[libIndex.material],"Library is empty")
+    local slot=assert(P.SLOTS[entry().o.preset][materialSlot],"No material slots for this generator")
+    entry().styles[slot]=table.clone(m.style); clearMeshPreview(); syncMaterials()
+    say("Material applied to the current slot. Generate to apply.")
+end),true)
+button("Save current slot to library",guarded(function()
+    local slot=assert(P.SLOTS[entry().o.preset][materialSlot],"No material slots for this generator")
+    local style=assert(entry().styles[slot],"Capture or apply a material to this slot first")
+    recorded("PathForge: Save material",function() Library.saveMaterial(Storage,fields.libName.Text,style) end)
+    syncLibrary(); say("Saved to the library.")
+end))
+label("05B  ASSETS",22,C.muted)
+assetLibLabel=label("Library is empty",24)
+row({{"Previous asset",function() step("asset",-1) end},{"Next asset",function() step("asset",1) end}})
+button("Add selected model to library",guarded(function()
+    local a=Selection:Get()[1]
+    assert(not preview or not a or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
+    local name=fields.libName.Text~="" and fields.libName.Text or (a and a.Name)
+    recorded("PathForge: Add asset",function() Library.addAsset(Storage,a,name) end)
+    syncLibrary(); say("Saved to the library.")
+end))
+row({
+    {"Use as Custom asset",guarded(function()
+        local _,assets=libLists(); local a=assert(assets[libIndex.asset],"Library is empty")
+        local e=entry(); e.source=a
+        if e.o.preset~="Custom" then e.o.preset="Custom"; applyDefaults() end
+        materialSlot=1; resetUpload(); clearMeshPreview(); syncButtons(); syncMaterials()
+        say("Asset selected. A reusable snapshot is stored when generated.")
+    end)},
+    {"Add as repeat layer",guarded(function()
+        local _,assets=libLists(); local a=assert(assets[libIndex.asset],"Library is empty")
+        assert(#repeatLayers<Layers.MAX_LAYERS,"Maximum 12 repeat layers")
+        repeatLayers[#repeatLayers+1]={source=a,spacing=5,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true}
+        layerIndex=#repeatLayers; syncLayers(); clearMeshPreview()
+        say("Layer added. Adjust it in the Layers tab.")
+    end)},
+})
+label("05C  RECIPES (GENERATORS + LAYERS, NO POINTS)",22,C.muted)
+recipeLabel=label("No saved recipes",24)
+row({{"Previous recipe",function() step("recipe",-1) end},{"Next recipe",function() step("recipe",1) end}})
+button("Save current setup as recipe",guarded(function()
+    storeFields()
+    recorded("PathForge: Save recipe",function() Library.saveRecipe(Storage,fields.libName.Text,entries,repeatLayers,smooth) end)
+    syncLibrary(); say("Saved to the library.")
+end),true)
+button("Load recipe into draft",guarded(function()
+    local _,_,recipes=libLists(); local r=assert(recipes[libIndex.recipe],"No saved recipes")
+    local loadedEntries,loadedLayers,loadedSmooth=Library.loadRecipe(r)
+    entries=loadedEntries; current=1; materialSlot=1
+    repeatLayers=loadedLayers; layerIndex=#repeatLayers>0 and 1 or 0
+    smooth=loadedSmooth
+    loadFields(); resetUpload(); clearMeshPreview(); syncLayers(); syncMaterials(); syncButtons(); refreshPreview()
+    say("Recipe loaded into the draft. Points are unchanged; Generate to apply.")
+end))
+label("Materials, assets and recipes are stored in ServerStorage > PathForgeLibrary and travel with this place. ★ marks your own materials.",58,C.muted)
+
 -- Commit / load ----------------------------------------------------------------
 local function commit(allowUpload)
     editAllowed(); stopMode(); storeFields()
@@ -656,5 +754,8 @@ local runConnection=RunService.Heartbeat:Connect(function()
 end)
 tool.Click:Connect(function() widget.Enabled=not widget.Enabled end)
 plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
-for _,field in pairs(fields) do field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
-loadFields(); syncButtons(); syncMaterials(); syncLayers(); ui.select("Path"); refreshLabel(); if widget.Enabled then refreshPreview() end
+for _,field in pairs(fields) do
+    if not field:GetAttribute("NoPreviewReset") then field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
+end
+ui.tabs.Library.Activated:Connect(syncLibrary)
+loadFields(); syncButtons(); syncMaterials(); syncLayers(); syncLibrary(); ui.select("Path"); refreshLabel(); if widget.Enabled then refreshPreview() end
