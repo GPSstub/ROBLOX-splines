@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9b — 2026-11-25
+### Added
+- Terrain section in the Path tab:
+  - **Drape points onto ground** puts control points on the surface below them (plus a height offset). With a resample spacing, the path is re-sampled every N studs first so it follows hills between the original points.
+  - **Fill and carve terrain along path** fills terrain under the path (to a depth, with shoulders on each side, top kept 0.5 studs below the path so voxels don't poke through roads) and clears terrain above it (to a clear height). Blocks follow the path's slope. One undo step. Fill material is selectable.
+- `Terrain` module and `tests/test_v09b.lua`; the smoke test drapes a path over a hill and checks fill/carve calls.
+
 ## v0.9a — 2026-11-25
 ### Added
 - Branches: **Snap path ends onto nearby paths** moves the first/last point of the draft onto the nearest saved PathForge path within a radius, so a side road starts exactly on the main road.

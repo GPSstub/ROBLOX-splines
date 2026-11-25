@@ -55,6 +55,12 @@
     },
     "Library": {
       "$path": "src/Library.lua"
+    },
+    "Network": {
+      "$path": "src/Network.lua"
+    },
+    "Terrain": {
+      "$path": "src/Terrain.lua"
     }
   }
 }

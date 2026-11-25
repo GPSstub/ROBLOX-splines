@@ -140,6 +140,7 @@ function methods:FindFirstChild(name) for _,c in ipairs(rawget(self,"_children")
 function methods:FindFirstChildWhichIsA(class,recursive)
     for _,c in ipairs(recursive and self:GetDescendants() or self:GetChildren()) do if c:IsA(class) then return c end end
 end
+function methods:FindFirstChildOfClass(class) for _,c in ipairs(rawget(self,"_children")) do if rawget(c,"_class")==class then return c end end end
 function methods:IsDescendantOf(other) local p=self.Parent; while p do if p==other then return true end; p=p.Parent end; return false end
 function methods:SetAttribute(k,v) rawget(self,"_attrs")[k]=v end
 function methods:GetAttribute(k) return rawget(self,"_attrs")[k] end

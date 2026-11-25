@@ -15,7 +15,18 @@ function M.install()
     local env={}
     env.workspace=Instance.new("Model"); env.workspace.Name="Workspace"
     env.rayHit=nil -- set to a Vector3 to simulate a surface hit
-    env.workspace.Raycast=function(_,origin) return env.rayHit and {Position=env.rayHit} or nil end
+    env.ground=nil -- function(x, z) -> height, used by downward rays (draping)
+    env.workspace.Raycast=function(_,origin,dir)
+        if env.ground and dir.Y<-1000 then
+            local y=env.ground(origin.X,origin.Z)
+            return y and {Position=V(origin.X,y,origin.Z)} or nil
+        end
+        return env.rayHit and {Position=env.rayHit} or nil
+    end
+    env.fills={}
+    env.terrain=Instance.new("Terrain"); env.terrain.Name="Terrain"
+    env.terrain.FillBlock=function(_,cf,size,material) env.fills[#env.fills+1]={cf=cf,size=size,material=material.Name} end
+    env.terrain.Parent=env.workspace
     workspace=env.workspace
     env.storage=Instance.new("Folder"); env.storage.Name="ServerStorage"
     env.coreGui=Instance.new("Folder")

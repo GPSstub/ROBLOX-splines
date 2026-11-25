@@ -269,10 +269,27 @@ local ko={
     ["No other path within the snap radius."]="스냅 반경 안에 다른 경로가 없어요.",
     ["Road junctions: ON"]="도로 교차로: 켬", ["Road junctions: OFF"]="도로 교차로: 끔",
     ["Snap radius must be positive"]="스냅 반경은 0보다 커야 해요",
+
+    -- v0.9b terrain
+    ["01B  TERRAIN"]="01B  지형",
+    ["Height above ground (studs)"]="지면 위 높이 (스터드)",
+    ["Drape resample spacing (0 = keep points)"]="지면 따라 다시 찍는 간격 (0 = 점 유지)",
+    ["Drape points onto ground"]="점을 지면에 붙이기",
+    ["Terrain shoulder each side (studs)"]="지형 양옆 여유 폭 (스터드)",
+    ["Fill depth below path (studs)"]="경로 아래 채울 깊이 (스터드)",
+    ["Clear height above path (studs)"]="경로 위 비울 높이 (스터드)",
+    ["Fill and carve terrain along path"]="경로를 따라 지형 채우기 / 깎기",
+    ["This place has no Terrain"]="이 플레이스에 Terrain이 없어요",
+    ["Invalid terrain settings"]="지형 설정이 잘못됐어요",
+    ["Resample spacing must be positive"]="다시 찍는 간격은 0보다 커야 해요",
+    ["Too many points: increase resample spacing"]="점이 너무 많아요. 다시 찍는 간격을 늘리세요",
 }
 
 -- Formatted messages: Lua pattern -> function returning the Korean text.
 local patterns={
+    {"^Fill material: (.+)$",function(m) return "채울 재질: "..m end},
+    {"^Draped (%d+) of (%d+) points onto the ground%.$",function(a,b) return "점 "..b.."개 중 "..a.."개를 지면에 붙였어요." end},
+    {"^Terrain: (%d+) fill and (%d+) carve blocks%. Undo reverts it in one step%.$",function(a,b) return "지형: 채우기 "..a.."개, 깎기 "..b.."개. 실행 취소 한 번으로 되돌릴 수 있어요." end},
     {"^Snapped (%d+) path end%(s%)%. Generate to build the branch%.$",function(n) return "경로 끝 "..n.."개를 붙였어요. 생성하면 분기가 만들어져요." end},
     {"^Part budget exceeded %((%d+)%)$",function(n) return "파트 한도("..n.."개)를 넘었어요" end},
     {"^Generator (%d+) / (%d+)  |  (.+)$",function(i,n,s) return "생성기 "..i.." / "..n.."  |  "..Locale.t(s) end},

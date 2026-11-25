@@ -151,6 +151,19 @@ t.check("junctions can be turned off",function()
     env.click("Generate / update saved path"); ok("no junctions")
     assert(not newest():FindFirstChild("Generated"):FindFirstChild("Junctions"))
 end)
+t.check("terrain: drape onto a hill and fill/carve along the path",function()
+    newRoad(V(300,0,0),V(360,0,0))
+    env.ground=function(x) return math.max(0,10-math.abs(x-330)/2) end
+    env.setField("Drape resample spacing (0 = keep points)",10)
+    env.click("Drape points onto ground")
+    local s=env.status(); assert(s:find("Draped 7 of 7",1,true),s)
+    env.click("Fill and carve terrain along path")
+    s=env.status(); assert(s:find("^Terrain: "),s)
+    local mats={}
+    for _,f in ipairs(env.fills) do mats[f.material]=(mats[f.material] or 0)+1 end
+    assert(mats.Air and mats.Ground and mats.Air==mats.Ground,"fills")
+    env.ground=nil
+end)
 t.check("play testing clears draft and preview",function()
     env.running=true; env.heartbeat:Fire()
     assert(not env.workspace:FindFirstChild("_PathForgeDraft"))

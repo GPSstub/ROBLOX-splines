@@ -15,6 +15,7 @@ local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
 local Library=require(script.Parent.Library)
 local Network=require(script.Parent.Network)
+local TerrainPlan=require(script.Parent.Terrain)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -266,6 +267,58 @@ end
 button("Apply selected XYZ",guarded(function() editAllowed(); assert(points[selected],"Select a node first"); points[selected]=Vector3.new(number("x",-100000,100000),number("y",-100000,100000),number("z",-100000,100000)); refreshPreview(); refreshLabel() end))
 button("Delete selected node",guarded(function() editAllowed(); if points[selected] then table.remove(points,selected); selected=math.min(selected,#points); refreshLabel(); refreshPreview() end end))
 local smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
+label("01B  TERRAIN",22,C.muted)
+input("drapeOffset","Height above ground (studs)",0.5)
+input("drapeSpacing","Drape resample spacing (0 = keep points)",0)
+-- Ground height under (x, z): terrain first, then any non-PathForge surface.
+local function groundAt(x,z)
+    local rp=RaycastParams.new(); rp.FilterType=Enum.RaycastFilterType.Exclude
+    local exclude={}; if preview then exclude[#exclude+1]=preview end; if root and root.Parent then exclude[#exclude+1]=root end
+    rp.FilterDescendantsInstances=exclude
+    local hit=workspace:Raycast(Vector3.new(x,10000,z),Vector3.new(0,-20000,0),rp)
+    return hit and hit.Position.Y or nil
+end
+button("Drape points onto ground",guarded(function()
+    editAllowed(); assert(#points>=1,"Add at least two points")
+    local offset=number("drapeOffset",-50,100)
+    local spacing=number("drapeSpacing",0,1000)
+    local out,hit
+    if spacing>0 then
+        assert(#points>=2,"Add at least two points")
+        out,hit=TerrainPlan.resample(pathFor(),spacing,groundAt,offset,MAX_POINTS)
+    else
+        out,hit=TerrainPlan.drape(points,groundAt,offset)
+    end
+    points=out; selected=math.min(math.max(selected,1),#points); refreshLabel(); refreshPreview()
+    say(string.format("Draped %d of %d points onto the ground.",hit,#points),hit==0)
+end))
+input("terrainShoulder","Terrain shoulder each side (studs)",2)
+input("terrainDepth","Fill depth below path (studs)",6)
+input("terrainClear","Clear height above path (studs)",12)
+local terrainMaterial="Ground"
+local terrainMaterialButton=button("Fill material: Ground",function()
+    terrainMaterial=TerrainPlan.MATERIALS[(table.find(TerrainPlan.MATERIALS,terrainMaterial) or 1)%#TerrainPlan.MATERIALS+1]
+end)
+terrainMaterialButton.Activated:Connect(function() terrainMaterialButton.Text=T("Fill material: "..terrainMaterial) end)
+button("Fill and carve terrain along path",guarded(function()
+    editAllowed(); storeFields()
+    local terrain=workspace:FindFirstChildOfClass("Terrain")
+    assert(terrain,"This place has no Terrain")
+    local width
+    for _,e in ipairs(entries) do if e.enabled then width=math.max(width or 0,e.o.width) end end
+    local path=pathFor()
+    local plan=TerrainPlan.plan(path,{width=width or 4,shoulder=number("terrainShoulder",0,100),depth=number("terrainDepth",0,200),
+        clear=number("terrainClear",0,200),step=4,offset=0})
+    local rec=History:TryBeginRecording("PathForgeTerrain","PathForge: Terrain along path")
+    assert(rec,"Cannot start Studio undo recording. Try again.")
+    local ok,err=pcall(function()
+        for _,b in ipairs(plan.carve) do terrain:FillBlock(b.cf,b.size,Enum.Material.Air) end
+        for _,b in ipairs(plan.fill) do terrain:FillBlock(b.cf,b.size,Enum.Material[terrainMaterial]) end
+    end)
+    History:FinishRecording(rec,ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not ok then error(err,0) end
+    say(string.format("Terrain: %d fill and %d carve blocks. Undo reverts it in one step.",#plan.fill,#plan.carve))
+end))
 label("01A  BRANCHES",22,C.muted)
 input("snapRadius","Branch snap radius (studs)",4)
 button("Snap path ends onto nearby paths",guarded(function()

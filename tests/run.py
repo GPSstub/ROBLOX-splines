@@ -12,7 +12,7 @@ SRC = ROOT / "src"
 
 def luau_to_lua(code: str) -> str:
     # x+=expr  ->  x=x+(expr) (also -=, *=, /=); expr ends at ';', a newline, or a trailing ' end'
-    return re.sub(r"([A-Za-z_][\w\.]*)\s*([-+*/])=\s*(.+?)(?=;|\n|\s+end\b)",
+    return re.sub(r"([A-Za-z_][\w\.]*)\s*([-+*/])=\s*(.+?)(?=;|\n|\s+(?:end|else|elseif)\b)",
                   lambda m: f"{m[1]}={m[1]}{m[2]}({m[3]})", code)
 
 def main(extra=()):

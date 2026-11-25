@@ -16,6 +16,7 @@ local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
 local Library=require(script.Parent.Library)
 local Network=require(script.Parent.Network)
+local TerrainPlan=require(script.Parent.Terrain)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -267,6 +268,58 @@ end
 button("Apply selected XYZ",guarded(function() editAllowed(); assert(points[selected],"Select a node first"); points[selected]=Vector3.new(number("x",-100000,100000),number("y",-100000,100000),number("z",-100000,100000)); refreshPreview(); refreshLabel() end))
 button("Delete selected node",guarded(function() editAllowed(); if points[selected] then table.remove(points,selected); selected=math.min(selected,#points); refreshLabel(); refreshPreview() end end))
 local smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
+label("01B  TERRAIN",22,C.muted)
+input("drapeOffset","Height above ground (studs)",0.5)
+input("drapeSpacing","Drape resample spacing (0 = keep points)",0)
+-- Ground height under (x, z): terrain first, then any non-PathForge surface.
+local function groundAt(x,z)
+    local rp=RaycastParams.new(); rp.FilterType=Enum.RaycastFilterType.Exclude
+    local exclude={}; if preview then exclude[#exclude+1]=preview end; if root and root.Parent then exclude[#exclude+1]=root end
+    rp.FilterDescendantsInstances=exclude
+    local hit=workspace:Raycast(Vector3.new(x,10000,z),Vector3.new(0,-20000,0),rp)
+    return hit and hit.Position.Y or nil
+end
+button("Drape points onto ground",guarded(function()
+    editAllowed(); assert(#points&gt;=1,"Add at least two points")
+    local offset=number("drapeOffset",-50,100)
+    local spacing=number("drapeSpacing",0,1000)
+    local out,hit
+    if spacing&gt;0 then
+        assert(#points&gt;=2,"Add at least two points")
+        out,hit=TerrainPlan.resample(pathFor(),spacing,groundAt,offset,MAX_POINTS)
+    else
+        out,hit=TerrainPlan.drape(points,groundAt,offset)
+    end
+    points=out; selected=math.min(math.max(selected,1),#points); refreshLabel(); refreshPreview()
+    say(string.format("Draped %d of %d points onto the ground.",hit,#points),hit==0)
+end))
+input("terrainShoulder","Terrain shoulder each side (studs)",2)
+input("terrainDepth","Fill depth below path (studs)",6)
+input("terrainClear","Clear height above path (studs)",12)
+local terrainMaterial="Ground"
+local terrainMaterialButton=button("Fill material: Ground",function()
+    terrainMaterial=TerrainPlan.MATERIALS[(table.find(TerrainPlan.MATERIALS,terrainMaterial) or 1)%#TerrainPlan.MATERIALS+1]
+end)
+terrainMaterialButton.Activated:Connect(function() terrainMaterialButton.Text=T("Fill material: "..terrainMaterial) end)
+button("Fill and carve terrain along path",guarded(function()
+    editAllowed(); storeFields()
+    local terrain=workspace:FindFirstChildOfClass("Terrain")
+    assert(terrain,"This place has no Terrain")
+    local width
+    for _,e in ipairs(entries) do if e.enabled then width=math.max(width or 0,e.o.width) end end
+    local path=pathFor()
+    local plan=TerrainPlan.plan(path,{width=width or 4,shoulder=number("terrainShoulder",0,100),depth=number("terrainDepth",0,200),
+        clear=number("terrainClear",0,200),step=4,offset=0})
+    local rec=History:TryBeginRecording("PathForgeTerrain","PathForge: Terrain along path")
+    assert(rec,"Cannot start Studio undo recording. Try again.")
+    local ok,err=pcall(function()
+        for _,b in ipairs(plan.carve) do terrain:FillBlock(b.cf,b.size,Enum.Material.Air) end
+        for _,b in ipairs(plan.fill) do terrain:FillBlock(b.cf,b.size,Enum.Material[terrainMaterial]) end
+    end)
+    History:FinishRecording(rec,ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not ok then error(err,0) end
+    say(string.format("Terrain: %d fill and %d carve blocks. Undo reverts it in one step.",#plan.fill,#plan.carve))
+end))
 label("01A  BRANCHES",22,C.muted)
 input("snapRadius","Branch snap radius (studs)",4)
 button("Snap path ends onto nearby paths",guarded(function()
@@ -1685,10 +1738,27 @@ local ko={
     ["No other path within the snap radius."]="스냅 반경 안에 다른 경로가 없어요.",
     ["Road junctions: ON"]="도로 교차로: 켬", ["Road junctions: OFF"]="도로 교차로: 끔",
     ["Snap radius must be positive"]="스냅 반경은 0보다 커야 해요",
+
+    -- v0.9b terrain
+    ["01B  TERRAIN"]="01B  지형",
+    ["Height above ground (studs)"]="지면 위 높이 (스터드)",
+    ["Drape resample spacing (0 = keep points)"]="지면 따라 다시 찍는 간격 (0 = 점 유지)",
+    ["Drape points onto ground"]="점을 지면에 붙이기",
+    ["Terrain shoulder each side (studs)"]="지형 양옆 여유 폭 (스터드)",
+    ["Fill depth below path (studs)"]="경로 아래 채울 깊이 (스터드)",
+    ["Clear height above path (studs)"]="경로 위 비울 높이 (스터드)",
+    ["Fill and carve terrain along path"]="경로를 따라 지형 채우기 / 깎기",
+    ["This place has no Terrain"]="이 플레이스에 Terrain이 없어요",
+    ["Invalid terrain settings"]="지형 설정이 잘못됐어요",
+    ["Resample spacing must be positive"]="다시 찍는 간격은 0보다 커야 해요",
+    ["Too many points: increase resample spacing"]="점이 너무 많아요. 다시 찍는 간격을 늘리세요",
 }
 
 -- Formatted messages: Lua pattern -&gt; function returning the Korean text.
 local patterns={
+    {"^Fill material: (.+)$",function(m) return "채울 재질: "..m end},
+    {"^Draped (%d+) of (%d+) points onto the ground%.$",function(a,b) return "점 "..b.."개 중 "..a.."개를 지면에 붙였어요." end},
+    {"^Terrain: (%d+) fill and (%d+) carve blocks%. Undo reverts it in one step%.$",function(a,b) return "지형: 채우기 "..a.."개, 깎기 "..b.."개. 실행 취소 한 번으로 되돌릴 수 있어요." end},
     {"^Snapped (%d+) path end%(s%)%. Generate to build the branch%.$",function(n) return "경로 끝 "..n.."개를 붙였어요. 생성하면 분기가 만들어져요." end},
     {"^Part budget exceeded %((%d+)%)$",function(n) return "파트 한도("..n.."개)를 넘었어요" end},
     {"^Generator (%d+) / (%d+)  |  (.+)$",function(i,n,s) return "생성기 "..i.." / "..n.."  |  "..Locale.t(s) end},
@@ -1735,7 +1805,7 @@ end
 return Locale
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">Version</string><ProtectedString name="Source">-- Single source of the plugin version shown in the UI and written to saves.
-return {FULL="0.9.0",SHORT="0.9a"}
+return {FULL="0.9.1",SHORT="0.9b"}
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX11"><Properties><string name="Name">Json</string><ProtectedString name="Source">-- Small deterministic JSON codec (sorted object keys). Used for saved settings,
 -- recipes and cache keys so the same input always produces the same text.
@@ -2631,4 +2701,188 @@ function L.loadRecipe(recipe)
     return L.decodeRecipe(data.Value,refs)
 end
 return L
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX19"><Properties><string name="Name">Network</string><ProtectedString name="Source">-- Path networks: snapping branch ends onto other paths and finding where paths
+-- cross, so roads can get a junction pad instead of overlapping surfaces.
+local G=require(script.Parent.Geometry)
+local N={}
+local EPS=1e-6
+
+-- Nearest point on a sampled path. Returns distance along path, position, gap.
+function N.project(path,q)
+    local ps,ds=path.positions,path.distances
+    local best,bestD,bestP=math.huge,0,ps[1]
+    for i=1,#ps-1 do
+        local a,b=ps[i],ps[i+1]
+        local ab=b-a
+        local len2=ab:Dot(ab)
+        local t=len2&gt;EPS and math.clamp((q-a):Dot(ab)/len2,0,1) or 0
+        local p=a+ab*t
+        local gap=(q-p).Magnitude
+        if gap&lt;best then best=gap; bestP=p; bestD=ds[i]+(ds[i+1]-ds[i])*t end
+    end
+    return bestD,bestP,best
+end
+
+-- Moves the first/last draft point onto the nearest other path within radius.
+-- Returns new points and how many ends were snapped.
+function N.snapEnds(points,paths,radius)
+    assert(radius&gt;0,"Snap radius must be positive")
+    local out=table.clone(points)
+    local snapped=0
+    for _,i in ipairs(#out&gt;=2 and {1,#out} or {}) do
+        local bestGap,bestP=radius,nil
+        for _,path in ipairs(paths) do
+            local _,p,gap=N.project(path,out[i])
+            if gap&lt;=bestGap then bestGap=gap; bestP=p end
+        end
+        if bestP then out[i]=bestP; snapped+=1 end
+    end
+    return out,snapped
+end
+
+-- 2D (XZ) intersection of segments ab and cd; returns ta, tc or nil.
+local function cross2(ax,az,bx,bz) return ax*bz-az*bx end
+local function intersect(a,b,c,d)
+    local rx,rz=b.X-a.X,b.Z-a.Z
+    local sx,sz=d.X-c.X,d.Z-c.Z
+    local den=cross2(rx,rz,sx,sz)
+    if math.abs(den)&lt;EPS then return nil end
+    local qx,qz=c.X-a.X,c.Z-a.Z
+    local t=cross2(qx,qz,sx,sz)/den
+    local u=cross2(qx,qz,rx,rz)/den
+    if t&lt;-EPS or t&gt;1+EPS or u&lt;-EPS or u&gt;1+EPS then return nil end
+    return t,u
+end
+
+-- Where path A meets path B in plan view (crossings and T-junction ends).
+-- maxGap limits the vertical difference (bridges over roads are not junctions).
+-- Returns a list of {da, db, position}, sorted along A, duplicates merged.
+function N.crossings(a,b,maxGap)
+    maxGap=maxGap or 2
+    local out={}
+    local pa,da,pb,db=a.positions,a.distances,b.positions,b.distances
+    for i=1,#pa-1 do
+        for j=1,#pb-1 do
+            local t,u=intersect(pa[i],pa[i+1],pb[j],pb[j+1])
+            if t then
+                local qa=pa[i]+(pa[i+1]-pa[i])*t
+                local qb=pb[j]+(pb[j+1]-pb[j])*u
+                if math.abs(qa.Y-qb.Y)&lt;=maxGap then
+                    out[#out+1]={da=da[i]+(da[i+1]-da[i])*t,db=db[j]+(db[j+1]-db[j])*u,position=(qa+qb)/2}
+                end
+            end
+        end
+    end
+    -- Ends of A that touch B (a snapped branch) count even without a strict crossing.
+    for _,d in ipairs({0,a.length}) do
+        local p=G.at(a,d)
+        local dbHit,q,gap=N.project(b,p)
+        if gap&lt;=0.05 and math.abs(p.Y-q.Y)&lt;=maxGap then out[#out+1]={da=d,db=dbHit,position=q} end
+    end
+    table.sort(out,function(x,y) return x.da&lt;y.da end)
+    local merged={}
+    for _,c in ipairs(out) do
+        local last=merged[#merged]
+        if not last or c.da-last.da&gt;0.5 then merged[#merged+1]=c end
+    end
+    return merged
+end
+
+-- Junction pads for this path against other paths.
+-- others: list of {path, width}; width is the other road's width.
+-- Returns {d, position, forward, up, size, half} for each junction.
+function N.junctions(path,width,others,maxGap)
+    local out={}
+    for _,other in ipairs(others) do
+        for _,c in ipairs(N.crossings(path,other.path,maxGap)) do
+            local _,fa,_,ua=G.frame(path,c.da)
+            local _,fb=G.frame(other.path,c.db)
+            -- Narrow crossing angles need a longer pad; capped at 3x.
+            local sin=math.max(math.abs(fa:Cross(fb).Magnitude),1/3)
+            local w=math.max(width,other.width)
+            local len=math.min(w/sin,w*3)
+            out[#out+1]={d=c.da,position=c.position,forward=fa,up=ua,size=Vector3.new(w,0,len),half=len/2}
+        end
+    end
+    table.sort(out,function(x,y) return x.d&lt;y.d end)
+    return out
+end
+
+-- Distance ranges along the path that a road should leave to the junction pad.
+function N.cuts(junctions,length)
+    local cuts={}
+    for _,j in ipairs(junctions) do
+        cuts[#cuts+1]={math.max(0,j.d-j.half),math.min(length,j.d+j.half)}
+    end
+    return cuts
+end
+
+-- Part specs for the pads: flat asphalt slabs whose top sits on the road surface.
+function N.padSpecs(junctions,height,offset)
+    local specs={}
+    for _,j in ipairs(junctions) do
+        local h=math.max(height,0.05)
+        local top=j.position+Vector3.new(0,offset+0.01,0)
+        local center=top-j.up*(h/2)
+        specs[#specs+1]={name="Junction",cf=CFrame.lookAt(center,center+j.forward,j.up),
+            size=Vector3.new(j.size.X,h,j.size.Z),material="Asphalt",color={54,58,63}}
+    end
+    return specs
+end
+return N
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX20"><Properties><string name="Name">Terrain</string><ProtectedString name="Source">-- Terrain-aware paths: draping points onto the ground, and planning terrain
+-- fill (support under the path) and carve (clear space above it).
+-- Pure planning; the plugin applies blocks with Terrain:FillBlock.
+local G=require(script.Parent.Geometry)
+local T={MAX_BLOCKS=2000}
+T.MATERIALS={"Ground","Grass","Rock","Asphalt","Sand","Mud","Slate","Concrete"}
+
+-- heightAt(x, z) -&gt; ground Y or nil. Points without ground keep their height.
+function T.drape(points,heightAt,offset)
+    local out,hit={},0
+    for i,p in ipairs(points) do
+        local y=heightAt(p.X,p.Z)
+        if y then out[i]=Vector3.new(p.X,y+offset,p.Z); hit+=1 else out[i]=p end
+    end
+    return out,hit
+end
+
+-- Resamples the path every `spacing` studs (keeping both ends) and drapes the
+-- new points, so the path follows hills between the original points.
+function T.resample(path,spacing,heightAt,offset,maxPoints)
+    assert(spacing&gt;0,"Resample spacing must be positive")
+    local n=math.max(1,math.ceil(path.length/spacing))
+    assert(n+1&lt;=maxPoints,"Too many points: increase resample spacing")
+    local pts={}
+    for i=0,n do pts[#pts+1]=G.at(path,path.length*i/n) end
+    return T.drape(pts,heightAt,offset)
+end
+
+-- Plans terrain blocks along the path. o = {width, shoulder, depth, clear, step, offset, sink}.
+-- The fill top sits `sink` studs below the path so terrain does not poke through roads.
+-- Each block follows the path frame; fill sits below the path surface,
+-- carve (air) above it. Returns {fill={...}, carve={...}} of {cf, size}.
+function T.plan(path,o)
+    assert(o.width&gt;0 and o.depth&gt;=0 and o.clear&gt;=0,"Invalid terrain settings")
+    local ds=G.segments(path,o.step,T.MAX_BLOCKS)
+    local fill,carve={},{}
+    local w=o.width+2*o.shoulder
+    for i=1,#ds-1 do
+        local a,_,_,ua=G.frame(path,ds[i]); local b,_,_,ub=G.frame(path,ds[i+1])
+        local up=(ua+ub).Unit
+        local len=(b-a).Magnitude
+        if len&gt;1e-4 then
+            local mid=(a+b)/2+Vector3.new(0,o.offset,0)
+            -- Terrain voxels are 4 studs; overlap blocks so curves leave no gaps.
+            local along=len+2
+            local look=CFrame.lookAt(mid,mid+(b-a),up)
+            if o.depth&gt;0 then fill[#fill+1]={cf=look*CFrame.new(0,-(o.sink or 0.5)-o.depth/2,0),size=Vector3.new(w,o.depth,along)} end
+            if o.clear&gt;0 then carve[#carve+1]={cf=look*CFrame.new(0,o.clear/2,0),size=Vector3.new(w,o.clear,along)} end
+        end
+    end
+    return {fill=fill,carve=carve}
+end
+return T
 </ProtectedString></Properties></Item></Item></roblox>
