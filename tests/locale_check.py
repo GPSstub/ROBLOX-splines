@@ -6,7 +6,7 @@ UI `.Text=T(...)` assignments, then runs Locale.t with Korean forced on.
 import pathlib, re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-CONTEXT = re.compile(r'\b(label|button|input|say|assert|error|T)\(')
+CONTEXT = re.compile(r'\b(label|button|input|say|assert|error|T)\(|^\s*\{"[^"]+",')
 LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 # Names that are only ever used internally (class names, attribute keys...).
 NOT_UI = {"PathForge"}
@@ -20,7 +20,7 @@ def ui_strings():
             if not CONTEXT.search(line):
                 continue
             for s in LITERAL.findall(line):
-                if s in NOT_UI or "%" in s or s != s.strip() or not s:
+                if s in NOT_UI or "%" in s or s != s.strip() or not s or s.endswith("("):
                     continue  # fragments / format strings are covered by SAMPLES
                 if " " in s or s in TAB_AND_PRESET_NAMES:
                     found.add(s)
@@ -47,6 +47,9 @@ SAMPLES = [
     "Mesh creation failed (asset 123): timeout",
     "PathForge.Geometry:44: Path is too short",
     "Preview: PathForge.Extrude:31: Profile area is zero",
+    "Part budget exceeded (3000)",
+    "Generator 2 / 3  |  Wall",
+    "Preview ready: 120 parts, 30 layer parts. Nothing was uploaded.",
 ]
 # Strings whose leading word is a Roblox/internal name and need no translation.
 ALLOWED_SAME = {"PATHFORGE   /   0.5"}

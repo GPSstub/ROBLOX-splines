@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v0.6 — 2026-11-25
+### Added
+- Generator stack: up to 8 generators share one path, each with its own type, options, material slots, source and on/off switch. Several mesh generators (e.g. two Extrude profiles) can be built together.
+- Part-based generators (Rail, Road, Wall, Fence, Pipe) now preview real geometry instead of guides only.
+- Saved data format 2 (`PathData/Generators`); v0.1–v0.5 saves still load as a one-generator stack.
+- Module tests (`tests/test_v06.lua`) and a fake-Studio smoke test that loads `Plugin.server.lua` and clicks through add points, preview, generate, load, update and play-test cleanup.
+
+### Changed
+- `Plugin.server.lua` split into `Presets`, `Builder`, `Persist`, `Assets`, `Ui`, `Json` and `Version` modules (generator, build and save logic moved out; the script is now UI wiring only).
+- Mesh upload authorization covers every enabled mesh generator of the next Generate. Part-based generators are built before any upload.
+- Material slot picker only lists slots the current generator uses.
+
+## v0.5.1 — 2026-11-25
 ### Added
 - Korean UI translation (`src/Locale.lua`), chosen automatically from Studio's language; English remains the default.
 - `tests/run.py`: runs the geometry self-tests, regression checks, translation coverage and package parity outside Studio; GitHub Actions workflow.

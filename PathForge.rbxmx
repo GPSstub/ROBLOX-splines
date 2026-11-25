@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<roblox version="4"><External>null</External><External>nil</External><Item class="Model" referent="RBX0"><Properties><string name="Name">PathForge</string></Properties><Item class="Script" referent="RBX1"><Properties><string name="Name">Plugin</string><ProtectedString name="Source">-- PathForge v0.5 | Studio-only path editor. Mesh uploads are explicit.
+<roblox version="4"><External>null</External><External>nil</External><Item class="Model" referent="RBX0"><Properties><string name="Name">PathForge</string></Properties><Item class="Script" referent="RBX1"><Properties><string name="Name">Plugin</string><ProtectedString name="Source">-- PathForge | Studio-only path editor. Mesh uploads are explicit.
+-- This script wires the UI to the modules; geometry, generators, building and
+-- saved data live in their own ModuleScripts.
 if not plugin then return end
 local G=require(script.Parent.Geometry)
 local Materials=require(script.Parent.Materials)
-local Deform=require(script.Parent.Deform)
-local Extrude=require(script.Parent.Extrude)
 local Layers=require(script.Parent.Layers)
 local SelfTest=require(script.Parent.SelfTest)
+local P=require(script.Parent.Presets)
+local Assets=require(script.Parent.Assets)
+local Builder=require(script.Parent.Builder)
+local Persist=require(script.Parent.Persist)
+local Ui=require(script.Parent.Ui)
+local Version=require(script.Parent.Version)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -20,125 +26,36 @@ local info=DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right,false,false,3
 local widget=plugin:CreateDockWidgetPluginGuiAsync("PathForge_Editor_v1",info)
 widget.Title=T("PathForge | Level Toolkit")
 local mouse=plugin:GetMouse()
-local presets={"Rail","Road","Wall","Fence","Pipe","Custom","Deform","Extrude"}
-local defaults={Rail={width=3.2,height=0.2,spacing=1.8,step=1},Road={width=12,height=0.35,spacing=8,step=2},Wall={width=0.8,height=8,spacing=5,step=2},Fence={width=0.3,height=4,spacing=5,step=2},Pipe={width=1.4,height=1.5,spacing=8,step=1},Custom={width=1,height=0,spacing=5,step=2},Deform={width=1,height=0,spacing=5,step=2},Extrude={width=6,height=1,spacing=5,step=2}}
-local fields={}
-local styles={}
-local materialSlots={"RailFoot","RailHead","Sleeper","RoadSurface","EdgeLine","CenterMark","Wall","FenceRail","FencePost","Pipe","Joint","ExtrudedMesh"}
-local materialSlot=1
+local C=Ui.C
+local MAX_PARTS=Builder.MAX_PARTS
+local MAX_POINTS=128
+local PREVIEW_BUDGET=3000
+
+-- Editor state -------------------------------------------------------------
 local busy=false
-local uploadArmed=false
-local uploadButton
 local unloading=false
-local loadedPivot=nil
-local loadedMeta=nil
-local loadedOutput=nil
-local draftGuides={}
-local draftNodes={}
-local meshPreview,previewEditable,layerPreview
+local uploadArmed=false
+local points={}
+local selected=0
+local smooth=true
+local root,loadedPivot,loadedMeta,loadedOutput=nil,nil,nil,nil
+local function newEntry(preset) return {o=P.options(preset),source=nil,styles={},enabled=true} end
+local entries={newEntry("Rail")}
+local current=1
+local function entry() return entries[current] end
 local repeatLayers={}
 local layerIndex=0
-local syncLayers=function() end
-local liveEnabled=false
-local previewBusy=false
-local previewRevision=0
-local previewDue=nil
-local liveButton
-local function setLive(enabled)
-    liveEnabled=enabled
-    previewDue=enabled and os.clock()+0.35 or nil
-    if liveButton then liveButton.Text=T(enabled and "Auto preview: ON" or "Auto preview: OFF") end
-end
-local fidelity="Default"
-local function clearMeshPreview()
-    previewRevision+=1
-    if liveEnabled then previewDue=os.clock()+0.35 end
-    if layerPreview then layerPreview:Destroy(); layerPreview=nil end
-    if meshPreview then meshPreview:Destroy(); meshPreview=nil end
-    if previewEditable then previewEditable:Destroy(); previewEditable=nil end
-end
-local function resetUpload()
-    uploadArmed=false
-    if uploadButton then uploadButton.Text=T("Authorize ONE mesh upload: OFF") end
-end
-local syncMaterials=function() end
-local points={}
-local preset="Rail"
-local smooth=true
-local collide=true
-local selected=0
-local root=nil
-local asset=nil
+local materialSlot=1
 local preview=nil
-local mode=nil
-local dragging=false
-local lastMove=0
-local refreshPreview
-local syncHandles=function() end
-local refreshLabel
-local syncButtons=function() end
-local MAX_PARTS=6500
-local MAX_POINTS=128
-local C={bg=Color3.fromRGB(24,28,34),panel=Color3.fromRGB(38,44,52),text=Color3.fromRGB(232,237,242),muted=Color3.fromRGB(157,170,185),accent=Color3.fromRGB(36,126,146),error=Color3.fromRGB(255,147,139)}
-local function make(class,parent,props)
-    local o=Instance.new(class)
-    for k,v in pairs(props or {}) do o[k]=v end
-    o.Parent=parent
-    return o
-end
-local scroll=make("ScrollingFrame",widget,{Size=UDim2.fromScale(1,1),BackgroundColor3=C.bg,BorderSizePixel=0,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(),ScrollBarThickness=5})
-make("UIPadding",scroll,{PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)})
-make("UIListLayout",scroll,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
-local order=0
-local currentSection=nil
-local activeSection="Path"
-local sectionItems={}
-local sectionButtons={}
-local function selectSection(name)
-    activeSection=name
-    for section,items in pairs(sectionItems) do
-        for _,obj in ipairs(items) do obj.Visible=section==name end
-    end
-    for section,b in pairs(sectionButtons) do b.BackgroundColor3=section==name and C.accent or C.panel end
-end
-local function item(class,props)
-    order=order+1
-    props.LayoutOrder=order
-    local obj=make(class,scroll,props)
-    if currentSection then
-        sectionItems[currentSection]=sectionItems[currentSection] or {}
-        table.insert(sectionItems[currentSection],obj); obj.Visible=currentSection==activeSection
-    end
-    return obj
-end
-local function label(text,h,color)
-    return item("TextLabel",{Size=UDim2.new(1,0,0,h or 22),BackgroundTransparency=1,Text=T(text),TextColor3=color or C.text,Font=Enum.Font.Gotham,TextSize=13,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
-end
-local function button(text,fn,accent)
-    local b=item("TextButton",{Size=UDim2.new(1,0,0,32),BackgroundColor3=accent and C.accent or C.panel,BorderSizePixel=0,Text=T(text),TextColor3=C.text,Font=Enum.Font.GothamMedium,TextSize=13,TextWrapped=true,AutoButtonColor=true})
-    make("UICorner",b,{CornerRadius=UDim.new(0,5)})
-    b.Activated:Connect(function() if not busy then fn() end end)
-    return b
-end
-local function input(key,title,value)
-    local row=item("Frame",{Size=UDim2.new(1,0,0,30),BackgroundTransparency=1})
-    make("TextLabel",row,{Size=UDim2.fromScale(0.59,1),BackgroundTransparency=1,Text=T(title),TextColor3=C.muted,Font=Enum.Font.Gotham,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
-    local box=make("TextBox",row,{Position=UDim2.fromScale(0.6,0),Size=UDim2.fromScale(0.4,1),BackgroundColor3=C.panel,BorderSizePixel=0,Text=tostring(value),TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=13,ClearTextOnFocus=false})
-    make("UICorner",box,{CornerRadius=UDim.new(0,4)})
-    fields[key]=box
-    return box
-end
-local title=label("PATHFORGE   /   0.5",28)
-title.Font=Enum.Font.GothamBold; title.TextSize=19
-local nav=item("Frame",{Size=UDim2.new(1,0,0,32),BackgroundTransparency=1})
-for i,name in ipairs({"Path","Shape","Layers","Build"}) do
-    local b=make("TextButton",nav,{Position=UDim2.new((i-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=T(name),TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
-    make("UICorner",b,{CornerRadius=UDim.new(0,4)}); sectionButtons[name]=b
-    b.Activated:Connect(function() selectSection(name); scroll.CanvasPosition=Vector2.zero end)
-end
-local status=label("Create a path or load a saved PathForge model.",46)
-currentSection="Path"
-label("01   PATH / CONTROL POINTS",22,C.muted)
+local draftGuides,draftNodes={},{}
+local previewFolder,previewMeshes=nil,{}
+local liveEnabled,previewBusy,previewRevision,previewDue=false,false,0,nil
+local mode,dragging,lastMove=nil,false,0
+local axisHandles,axisStart,axisNode
+
+local ui=Ui.new(widget,T,function() return busy end)
+local label,button,input,row,fields=ui.label,ui.button,ui.input,ui.row,ui.fields
+local status
 local function say(t,err) status.Text=T(t); status.TextColor3=err and C.error or C.text end
 local function guarded(fn)
     return function(...)
@@ -153,11 +70,38 @@ local function number(key,lo,hi)
     assert(v and v==v and v&gt;=lo and v&lt;=hi,key.." must be between "..lo.." and "..hi)
     return v
 end
-local function options()
-    return {profile=fields.profile.Text,sides=math.floor(number("sides",3,64)),uvLength=number("uvLength",0.05,1000),uvWidth=number("uvWidth",0.05,1000),angle=number("angle",1,90),tolerance=number("tolerance",0.005,10),fidelity=fidelity,materialStyles=Http:JSONEncode(styles),preset=preset,smooth=smooth,collide=collide,width=number("width",0.05,100),height=number("height",-50,100),spacing=number("spacing",0.2,200),step=number("step",0.15,100),offset=number("offset",-100,100),yaw=number("yaw",-360,360),roll=number("roll",-360,360)}
-end
+local function canContinue() return not unloading and widget.Enabled and not RunService:IsRunning() end
 local function pathFor()
     local path=G.path(points,smooth); path.linear=not smooth; return path
+end
+local function hasMeshEntry()
+    for _,e in ipairs(entries) do if e.enabled and P.MESH[e.o.preset] then return true end end
+    return false
+end
+
+-- Late-bound UI refreshers.
+local refreshPreview,refreshLabel
+local syncHandles=function() end
+local syncButtons=function() end
+local syncMaterials=function() end
+local syncLayers=function() end
+local liveButton,uploadButton
+
+local function setLive(enabled)
+    liveEnabled=enabled
+    previewDue=enabled and os.clock()+0.35 or nil
+    if liveButton then liveButton.Text=T(enabled and "Auto preview: ON" or "Auto preview: OFF") end
+end
+local function clearMeshPreview()
+    previewRevision+=1
+    if liveEnabled then previewDue=os.clock()+0.35 end
+    if previewFolder then previewFolder:Destroy(); previewFolder=nil end
+    for _,m in ipairs(previewMeshes) do m:Destroy() end
+    previewMeshes={}
+end
+local function resetUpload()
+    uploadArmed=false
+    if uploadButton then uploadButton.Text=T("Authorize mesh uploads for next Generate: OFF") end
 end
 local function clearPreview()
     setLive(false); clearMeshPreview()
@@ -171,18 +115,34 @@ end
 local function startMode(m)
     editAllowed(); mode=m; plugin:Activate(true); syncHandles(); say(m=="add" and "Click surfaces to add points. Switch to Move to drag nodes." or (m=="insert" and "Click a surface to insert a node after the selected node." or "Drag a blue node. Use coordinate fields for exact XYZ."))
 end
-local function simplePart(parent,name,cf,size,material,color,canCollide)
-    local p=Instance.new("Part")
-    p.Name=name; p.Size=Vector3.new(math.max(size.X,0.05),math.max(size.Y,0.05),math.max(size.Z,0.05)); p.CFrame=cf
-    p.Anchored=true; p.CanCollide=canCollide; p.CanTouch=false; p.Material=material; p.Color=color
-    p.TopSurface=Enum.SurfaceType.Smooth; p.BottomSurface=Enum.SurfaceType.Smooth; p.Parent=parent
-    return p
+
+-- Generator fields &lt;-&gt; current stack entry.
+local NUMBER_KEYS={"width","height","spacing","step","offset","yaw","roll","sides","uvLength","uvWidth","angle","tolerance"}
+local function storeFields()
+    local e=entry()
+    local o=table.clone(e.o)
+    for _,k in ipairs(NUMBER_KEYS) do local spec=P.NUMBERS[k]; o[k]=number(k,spec[1],spec[2]) end
+    o.profile=fields.profile.Text
+    e.o=P.validate(o)
 end
-local function axisCF(a,b,up)
-    local v=b-a
-    if v.Magnitude&lt;1e-5 then return nil,0 end
-    if math.abs(v.Unit:Dot(up))&gt;0.995 then up=Vector3.new(0,0,1); if math.abs(v.Unit:Dot(up))&gt;0.995 then up=Vector3.new(1,0,0) end end
-    return CFrame.lookAt((a+b)/2,b,up),v.Magnitude
+local function loadFields()
+    local o=entry().o
+    for _,k in ipairs(NUMBER_KEYS) do fields[k].Text=tostring(o[k]) end
+    fields.profile.Text=o.profile
+end
+local function applyDefaults()
+    local o=entry().o
+    for k,v in pairs(P.DEFAULTS[o.preset]) do o[k]=v end
+    loadFields()
+end
+
+-- Draft guides ---------------------------------------------------------------
+local function guidePart(parent,name,cf,size,color)
+    local p=Instance.new("Part")
+    p.Name=name; p.Size=size; p.CFrame=cf
+    p.Anchored=true; p.CanCollide=false; p.CanTouch=false; p.CanQuery=false; p.CastShadow=false; p.Archivable=false
+    p.Material=Enum.Material.Neon; p.Color=color; p.Parent=parent
+    return p
 end
 -- Reuse guide instances while dragging; no repeated full-folder allocation.
 refreshPreview=function()
@@ -199,14 +159,12 @@ refreshPreview=function()
             local n=math.min(160,math.max(1,math.ceil(path.length/2)))
             for i=1,n do
                 local a,b=G.at(path,path.length*(i-1)/n),G.at(path,path.length*i/n)
-                local cf,len=axisCF(a,b,Vector3.new(0,1,0))
+                local cf,len=P.axisCF(a,b,Vector3.yAxis)
                 if cf then
                     used+=1
                     local part=draftGuides[used]
                     if not part then
-                        part=simplePart(preview,"Guide",cf,Vector3.new(0.1,0.1,len+0.04),Enum.Material.Neon,Color3.fromRGB(66,187,216),false)
-                        part.CanQuery=false; part.CastShadow=false; part.Archivable=false
-                        draftGuides[used]=part
+                        draftGuides[used]=guidePart(preview,"Guide",cf,Vector3.new(0.1,0.1,len+0.04),Color3.fromRGB(66,187,216))
                     else
                         part.CFrame=cf; part.Size=Vector3.new(0.1,0.1,len+0.04)
                     end
@@ -219,22 +177,41 @@ refreshPreview=function()
         local color=i==selected and Color3.fromRGB(255,176,79) or Color3.fromRGB(70,160,255)
         local node=draftNodes[i]
         if not node then
-            node=simplePart(preview,"Node_"..i,CFrame.new(pos),Vector3.new(0.65,0.65,0.65),Enum.Material.Neon,color,false)
-            node.Shape=Enum.PartType.Ball; node.CastShadow=false; node.Archivable=false
+            node=guidePart(preview,"Node_"..i,CFrame.new(pos),Vector3.new(0.65,0.65,0.65),color)
+            node.Shape=Enum.PartType.Ball; node.CanQuery=true
             node:SetAttribute("NodeIndex",i); draftNodes[i]=node
         else node.CFrame=CFrame.new(pos); node.Color=color end
     end
     for i=#draftNodes,#points+1,-1 do draftNodes[i]:Destroy(); draftNodes[i]=nil end
     syncHandles()
 end
+
+-- Header / tabs --------------------------------------------------------------
+local title=label("PATHFORGE   /   "..Version.SHORT,28)
+title.Font=Enum.Font.GothamBold; title.TextSize=19
+ui.tabBar({"Path","Shape","Layers","Build"})
+status=label("Create a path or load a saved PathForge model.",46)
+
+-- 01 Path --------------------------------------------------------------------
+ui.section="Path"
+label("01   PATH / CONTROL POINTS",22,C.muted)
 local pointLabel=label("0 points",22)
-button("New path / clear draft",guarded(function() editAllowed(); stopMode(); root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil; asset=nil; repeatLayers={}; layerIndex=0; syncLayers(); resetUpload(); points={}; selected=0; styles={}; syncMaterials(); syncButtons(); refreshLabel(); refreshPreview(); say("New draft. Existing generated models are unchanged.") end))
+local function resetDraft()
+    root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil
+    entries={newEntry("Rail")}; current=1; loadFields()
+    repeatLayers={}; layerIndex=0; syncLayers(); resetUpload()
+    points={}; selected=0; materialSlot=1
+    syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
+end
+button("New path / clear draft",guarded(function() editAllowed(); stopMode(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
 button("Add points in viewport",guarded(function() startMode("add") end),true)
 button("Move nodes by dragging",guarded(function() startMode("move") end))
 button("Insert node after selected",guarded(function() assert(selected&gt;0,"Select a node first"); startMode("insert") end))
 button("Stop viewport editing",function() stopMode(); say("Viewport released; draft kept.") end)
-button("Previous / select node",function() if #points&gt;0 then selected=(selected-2)%#points+1; refreshLabel(); refreshPreview() end end)
-button("Next / select node",function() if #points&gt;0 then selected=selected%#points+1; refreshLabel(); refreshPreview() end end)
+row({
+    {"Previous node",function() if #points&gt;0 then selected=(selected-2)%#points+1; refreshLabel(); refreshPreview() end end},
+    {"Next node",function() if #points&gt;0 then selected=selected%#points+1; refreshLabel(); refreshPreview() end end},
+})
 input("x","Selected X",0); input("y","Selected Y",0); input("z","Selected Z",0)
 input("grid","Placement grid (0 = off)",0)
 input("plane","Empty-space plane Y",0)
@@ -245,6 +222,8 @@ refreshLabel=function()
 end
 button("Apply selected XYZ",guarded(function() editAllowed(); assert(points[selected],"Select a node first"); points[selected]=Vector3.new(number("x",-100000,100000),number("y",-100000,100000),number("z",-100000,100000)); refreshPreview(); refreshLabel() end))
 button("Delete selected node",guarded(function() editAllowed(); if points[selected] then table.remove(points,selected); selected=math.min(selected,#points); refreshLabel(); refreshPreview() end end))
+local smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
+
 local function hitPosition(planeY)
     local ray=mouse.UnitRay
     local rp=RaycastParams.new(); rp.FilterType=Enum.RaycastFilterType.Exclude
@@ -262,7 +241,6 @@ local function hitPosition(planeY)
     if grid&gt;0 then p=Vector3.new(math.floor(p.X/grid+0.5)*grid,math.floor(p.Y/grid+0.5)*grid,math.floor(p.Z/grid+0.5)*grid) end
     return p
 end
-local axisHandles,axisStart,axisNode
 local function movePoint()
     local old=points[selected]; if not old then return end
     local p=hitPosition(old.Y)
@@ -278,7 +256,7 @@ mouse.Button1Down:Connect(guarded(function()
         assert(#points&lt;MAX_POINTS,"Maximum 128 points")
         local p=hitPosition(number("plane",-100000,100000))
         if p then
-            if mode=="insert" and selected&gt;0 then selected=selected+1; table.insert(points,selected,p) else points[#points+1]=p; selected=#points end
+            if mode=="insert" and selected&gt;0 then selected+=1; table.insert(points,selected,p) else points[#points+1]=p; selected=#points end
             refreshLabel(); refreshPreview()
         end
     end
@@ -313,38 +291,52 @@ do
     end)
     if not ok then if axisHandles then axisHandles:Destroy(); axisHandles=nil end; syncHandles=function() end; warn("[PathForge] Axis handles unavailable:",err) end
 end
-currentSection="Shape"
-label("02   GENERATOR / PARAMETERS",22,C.muted)
-local presetButton,smoothButton,collisionButton,assetLabel
+
+-- 02 Shape: generator stack ----------------------------------------------------
+ui.section="Shape"
+label("02   GENERATOR STACK",22,C.muted)
+local stackLabel=label("Generator 1 / 1  |  Rail",24)
+local function switchTo(i)
+    storeFields(); current=i; materialSlot=1; loadFields(); resetUpload(); clearMeshPreview(); syncMaterials(); syncButtons()
+end
+row({
+    {"Previous generator",guarded(function() if #entries&gt;1 then switchTo((current-2)%#entries+1) end end)},
+    {"Next generator",guarded(function() if #entries&gt;1 then switchTo(current%#entries+1) end end)},
+})
+row({
+    {"Add generator",guarded(function()
+        assert(#entries&lt;Persist.MAX_GENERATORS,"Maximum 8 generators per path")
+        storeFields()
+        local copy={o=table.clone(entry().o),source=entry().source,styles=table.clone(entry().styles),enabled=true}
+        table.insert(entries,current+1,copy); switchTo(current+1)
+        say("Generator added. Pick its type and settings; all generators share this path.")
+    end)},
+    {"Remove generator",guarded(function()
+        assert(#entries&gt;1,"A path needs at least one generator")
+        table.remove(entries,current); current=math.min(current,#entries); materialSlot=1
+        loadFields(); resetUpload(); clearMeshPreview(); syncMaterials(); syncButtons()
+    end)},
+})
+local enabledGenButton=button("Generator enabled: ON",function()
+    local e=entry(); e.enabled=not e.enabled; clearMeshPreview(); syncButtons()
+end)
+label("02A  GENERATOR TYPE / PARAMETERS",22,C.muted)
 local presetChoices={}
-syncButtons=function()
-    presetButton.Text=T("Generator: "..preset)
-    for name,b in pairs(presetChoices) do b.BackgroundColor3=name==preset and C.accent or C.panel end
-    smoothButton.Text=T(smooth and "Curve: Smooth spline" or "Curve: Straight segments")
-    collisionButton.Text=T(collide and "Collision: ON" or "Collision: OFF")
-    assetLabel.Text=T(asset and ("Asset: "..asset.Name) or "Asset: none (Custom / Deform)")
-    if preset~="Deform" and preset~="Extrude" then resetUpload() end
-    -- Upload authorization is in Build, always visible when that tab is selected.
-end
-local function applyDefaults()
-    for k,v in pairs(defaults[preset]) do fields[k].Text=tostring(v) end
-end
-presetButton=label("Generator: Rail",24)
-for row=0,1 do
-    local panel=item("Frame",{Size=UDim2.new(1,0,0,29),BackgroundTransparency=1})
+for r=0,1 do
+    local list={}
     for col=1,4 do
-        local name=presets[row*4+col]
-        local b=make("TextButton",panel,{Position=UDim2.new((col-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=T(name),TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
-        make("UICorner",b,{CornerRadius=UDim.new(0,4)}); presetChoices[name]=b
-        b.Activated:Connect(function()
-            if busy or preset==name then return end
-            preset=name; if name=="Extrude" then asset=nil end
-            resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
-        end)
+        local name=P.LIST[r*4+col]
+        list[col]={name,function()
+            local e=entry()
+            if e.o.preset==name then return end
+            e.o.preset=name
+            if name=="Extrude" then e.source=nil end
+            materialSlot=1; resetUpload(); applyDefaults(); syncButtons(); syncMaterials(); clearMeshPreview()
+        end}
     end
+    for col,b in ipairs(row(list,29)) do presetChoices[P.LIST[r*4+col]]=b end
 end
-smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
-collisionButton=button("Collision: ON",function() collide=not collide; clearMeshPreview(); syncButtons() end)
+local collisionButton=button("Collision: ON",function() local o=entry().o; o.collide=not o.collide; clearMeshPreview(); syncButtons() end)
 input("width","Width / rail gauge / diameter",3.2)
 input("height","Height / base elevation",0.2)
 input("spacing","Asset / sleeper / post spacing",1.8)
@@ -352,80 +344,78 @@ input("step","Segment size (studs)",1)
 input("offset","Vertical offset (studs)",0)
 input("yaw","Custom yaw (degrees)",0)
 input("roll","Roll (degrees)",0)
-label("02A  EXTRUDE / MESH QUALITY",22,C.muted)
-input("profile","Profile (rectangle / circle / arch / x,y;...)", "rectangle")
+label("02B  EXTRUDE / MESH QUALITY",22,C.muted)
+input("profile","Profile (rectangle / circle / arch / x,y;...)","rectangle")
 input("sides","Circle / arch subdivisions",16)
 input("uvLength","UV length per tile",4)
 input("uvWidth","UV perimeter per tile",4)
 input("angle","Max turn per segment (degrees)",8)
 input("tolerance","Chord tolerance (studs)",0.05)
-local collisionModes={"Default","Box","Hull","PreciseConvexDecomposition"}
 local fidelityButton
 fidelityButton=button("Mesh collision: Default",function()
-    fidelity=collisionModes[(table.find(collisionModes,fidelity) or 1)%#collisionModes+1]
-    fidelityButton.Text=T("Mesh collision: "..fidelity); clearMeshPreview()
+    local o=entry().o
+    o.fidelity=P.FIDELITY[(table.find(P.FIDELITY,o.fidelity) or 1)%#P.FIDELITY+1]
+    syncButtons(); clearMeshPreview()
 end)
-assetLabel=label("Asset: none (Custom preset only)",30,C.muted)
-local function validAsset(a)
-    assert(a and (a:IsA("Model") or a:IsA("BasePart")),"Select a Model or BasePart")
-    assert(a.Archivable,"Asset must be Archivable")
-    assert(not a:IsA("Terrain"),"Terrain cannot be used as a static asset")
-    local count=a:IsA("BasePart") and 1 or 0
-    for _,d in ipairs(a:GetDescendants()) do
-        if d:IsA("BasePart") then count=count+1; assert(d.Archivable,"All source BaseParts must be Archivable") end
-    end
-    assert(count&gt;0,"Asset contains no BaseParts")
-    return count
+local assetLabel=label("Asset: none (Custom preset only)",30,C.muted)
+local function pickSource(kind)
+    editAllowed()
+    local a=Selection:Get()[1]; Assets.count(a); assert(a.Parent,"Select an existing asset")
+    assert(not preview or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
+    assert(not root or (a~=root and not a:IsDescendantOf(root)),"Choose a source outside the active generated path")
+    if kind~="Custom" then assert(a:IsA("MeshPart"),"Select a single MeshPart") end
+    local e=entry(); e.source=a
+    if e.o.preset~=kind then e.o.preset=kind; applyDefaults() end
+    materialSlot=1; resetUpload(); clearMeshPreview(); syncButtons(); syncMaterials()
 end
-button("Use selected Model as custom asset",guarded(function()
-    editAllowed(); local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
-    assert(not preview or not a:IsDescendantOf(preview),"Do not use a preview node")
-    clearMeshPreview(); asset=a; preset="Custom"; applyDefaults(); syncButtons(); say("Asset selected. A reusable snapshot is stored when generated.")
+button("Use selected Model as custom asset",guarded(function() pickSource("Custom"); say("Asset selected. A reusable snapshot is stored when generated.") end))
+button("Use selected MeshPart / Deform",guarded(function() pickSource("Deform"); say("Deform uses the full path length, local -Z forward. Dense mesh required.") end))
+button("Use selected MeshPart appearance / Extrude",guarded(function() pickSource("Extrude"); say("Extrude copies selected mesh appearance, not its geometry.") end))
+button("Clear source / use Extrude material slot",guarded(function()
+    local e=entry(); e.source=nil
+    if e.o.preset~="Extrude" then e.o.preset="Extrude"; applyDefaults() end
+    resetUpload(); syncButtons(); syncMaterials(); clearMeshPreview()
 end))
-label("02B  MATERIAL SLOTS",22,C.muted)
-local slotButton,styleLabel
-syncMaterials=function()
-    local name=materialSlots[materialSlot]
-    if slotButton then slotButton.Text=T("Material slot: "..name) end
-    if styleLabel then
-        local style=styles[name]
-        styleLabel.Text=T(style and (style.material.." / "..(style.variant~="" and style.variant or "default").." / "..#style.textures.." textures") or "Preset default (no override)")
-    end
-end
-slotButton=button("Material slot: RailFoot",function()
-    materialSlot=materialSlot%#materialSlots+1; syncMaterials()
+
+label("02C  MATERIAL SLOTS",22,C.muted)
+local slotButton=button("Material slot: RailFoot",function()
+    local slots=P.SLOTS[entry().o.preset]
+    if #slots&gt;0 then materialSlot=materialSlot%#slots+1; syncMaterials() end
 end)
-styleLabel=label("Preset default (no override)",34,C.muted)
+local styleLabel=label("Preset default (no override)",34,C.muted)
+syncMaterials=function()
+    local slots=P.SLOTS[entry().o.preset]
+    local name=slots[materialSlot]
+    slotButton.Text=T(name and ("Material slot: "..name) or "No material slots for this generator")
+    local style=name and entry().styles[name]
+    styleLabel.Text=T(style and (style.material.." / "..(style.variant~="" and style.variant or "default").." / "..#style.textures.." textures") or "Preset default (no override)")
+end
 button("Capture material from selected part",guarded(function()
     editAllowed()
+    local name=assert(P.SLOTS[entry().o.preset][materialSlot],"No material slots for this generator")
     local s=Selection:Get()[1]
     assert(not preview or not s or not s:IsDescendantOf(preview),"Select a real source part")
-    styles[materialSlots[materialSlot]]=Materials.capture(s); clearMeshPreview()
+    entry().styles[name]=Materials.capture(s); clearMeshPreview()
     syncMaterials(); say("Material slot captured. Generate to apply.")
 end),true)
-button("Reset material slot",function() styles[materialSlots[materialSlot]]=nil; clearMeshPreview(); syncMaterials() end)
-button("Reset all material slots",function() styles={}; clearMeshPreview(); syncMaterials() end)
-button("Use selected MeshPart / Deform",guarded(function()
-    editAllowed()
-    local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
-    assert(a:IsA("MeshPart"),"Select a single MeshPart")
-    assert(not preview or not a:IsDescendantOf(preview),"Do not use preview objects")
-    assert(not root or not a:IsDescendantOf(root),"Use a source mesh outside the active generated path")
-    clearMeshPreview(); resetUpload(); asset=a; preset="Deform"; applyDefaults(); syncButtons()
-    say("Deform uses the full path length, local -Z forward. Dense mesh required.")
-end))
-button("Use selected MeshPart appearance / Extrude",guarded(function()
-    editAllowed(); local a=Selection:Get()[1]; validAsset(a)
-    assert(a:IsA("MeshPart") and a.Parent,"Select a MeshPart with PBR appearance")
-    assert(not preview or not a:IsDescendantOf(preview),"Select a real source")
-    assert(not root or not a:IsDescendantOf(root),"Choose a source outside active path")
-    asset=a; preset="Extrude"; resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
-    say("Extrude copies selected mesh appearance, not its geometry.")
-end))
-button("Clear source / use Extrude material slot",guarded(function()
-    asset=nil; preset="Extrude"; resetUpload(); applyDefaults(); syncButtons(); clearMeshPreview()
-end))
-currentSection="Layers"
+row({
+    {"Reset material slot",function() local name=P.SLOTS[entry().o.preset][materialSlot]; if name then entry().styles[name]=nil end; clearMeshPreview(); syncMaterials() end},
+    {"Reset all material slots",function() entry().styles={}; clearMeshPreview(); syncMaterials() end},
+})
+syncButtons=function()
+    local e=entry()
+    stackLabel.Text=T(string.format("Generator %d / %d  |  %s",current,#entries,e.o.preset))
+    for name,b in pairs(presetChoices) do b.BackgroundColor3=name==e.o.preset and C.accent or C.panel end
+    enabledGenButton.Text=T(e.enabled and "Generator enabled: ON" or "Generator enabled: OFF")
+    smoothButton.Text=T(smooth and "Curve: Smooth spline" or "Curve: Straight segments")
+    collisionButton.Text=T(e.o.collide and "Collision: ON" or "Collision: OFF")
+    fidelityButton.Text=T("Mesh collision: "..e.o.fidelity)
+    assetLabel.Text=T(e.source and ("Asset: "..e.source.Name) or "Asset: none (Custom / Deform)")
+    if not hasMeshEntry() then resetUpload() end
+end
+
+-- 03 Layers ------------------------------------------------------------------
+ui.section="Layers"
 label("03   REPEAT LAYERS / SHARED PATH",22,C.muted)
 local layerTitle=label("No repeat layers",42)
 input("layerSpacing","Spacing (studs)",5)
@@ -444,15 +434,17 @@ syncLayers=function()
     if layerCollisionButton then layerCollisionButton.Text=T(l and (l.collide and "Layer collision: ON" or "Layer collision: OFF") or "Layer collision: —") end
 end
 button("Add selected model as repeat layer",guarded(function()
-    editAllowed(); local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
+    editAllowed(); local a=Selection:Get()[1]; Assets.count(a); assert(a.Parent,"Select an existing asset")
     assert(not preview or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
     assert(not root or (a~=root and not a:IsDescendantOf(root)),"Do not use the active generated path")
     assert(#repeatLayers&lt;Layers.MAX_LAYERS,"Maximum 12 repeat layers")
     repeatLayers[#repeatLayers+1]={source=a,spacing=5,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true}
     layerIndex=#repeatLayers; syncLayers(); clearMeshPreview()
 end),true)
-button("Previous layer",function() if #repeatLayers&gt;0 then layerIndex=(layerIndex-2)%#repeatLayers+1; syncLayers() end end)
-button("Next layer",function() if #repeatLayers&gt;0 then layerIndex=layerIndex%#repeatLayers+1; syncLayers() end end)
+row({
+    {"Previous layer",function() if #repeatLayers&gt;0 then layerIndex=(layerIndex-2)%#repeatLayers+1; syncLayers() end end},
+    {"Next layer",function() if #repeatLayers&gt;0 then layerIndex=layerIndex%#repeatLayers+1; syncLayers() end end},
+})
 button("Apply layer settings",guarded(function()
     local l=assert(repeatLayers[layerIndex],"Select a layer")
     local nextLayer=table.clone(l)
@@ -460,133 +452,25 @@ button("Apply layer settings",guarded(function()
     nextLayer.height=number("layerHeight",-1000,1000); nextLayer.yaw=number("layerYaw",-360,360); nextLayer.roll=number("layerRoll",-360,360)
     Layers.validate(nextLayer); repeatLayers[layerIndex]=nextLayer; clearMeshPreview(); say("Layer settings applied to draft.")
 end),true)
-enabledButton=button("Layer enabled: —",function() local l=repeatLayers[layerIndex]; if l then l.enabled=not l.enabled; syncLayers(); clearMeshPreview() end end)
-layerCollisionButton=button("Layer collision: —",function() local l=repeatLayers[layerIndex]; if l then l.collide=not l.collide; syncLayers(); clearMeshPreview() end end)
+local toggles=row({
+    {"Layer enabled: —",function() local l=repeatLayers[layerIndex]; if l then l.enabled=not l.enabled; syncLayers(); clearMeshPreview() end end},
+    {"Layer collision: —",function() local l=repeatLayers[layerIndex]; if l then l.collide=not l.collide; syncLayers(); clearMeshPreview() end end},
+})
+enabledButton,layerCollisionButton=toggles[1],toggles[2]
 button("Remove selected layer",guarded(function()
     if repeatLayers[layerIndex] then table.remove(repeatLayers,layerIndex); layerIndex=math.min(layerIndex,#repeatLayers); syncLayers(); clearMeshPreview() end
 end))
 label("Each layer repeats its own source model along the same spline. Apply layer settings before preview or generation.",58,C.muted)
-local function cloneAsset(a)
-    local c=a:Clone(); assert(c,"Cannot clone asset")
-    for _,d in ipairs(c:GetDescendants()) do
-        if d:IsA("LuaSourceContainer") or d:IsA("JointInstance") or d:IsA("Constraint") or d:IsA("WeldConstraint") or d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then d:Destroy() end
-    end
-    return c
-end
-local steel=Color3.fromRGB(103,110,119)
-local timber=Color3.fromRGB(91,67,46)
-local asphalt=Color3.fromRGB(54,58,63)
-local concrete=Color3.fromRGB(129,130,124)
-local function build(path,o,source,allowUpload)
-    local output=Instance.new("Folder"); output.Name="Generated"
-    local count=0
-    local overrides=Http:JSONDecode(o.materialStyles or "{}")
-    local function add(name,cf,size,mat,col,shape)
-        count=count+1; assert(count&lt;=MAX_PARTS,"Part budget exceeded (6500)")
-        local p=simplePart(output,name,cf,size,mat,col,o.collide)
-        if shape then p.Shape=shape end
-        Materials.apply(p,overrides[name])
-        return p
-    end
-    local function frame(d)
-        local p,f,r,u=G.frame(path,d); return p+Vector3.new(0,o.offset,0),f,r,u
-    end
-    local function beam(name,a,b,up,w,h,mat,col,overlap)
-        local cf,len=axisCF(a,b,up)
-        if cf then add(name,cf,Vector3.new(w,h,len+(overlap or 0)),mat,col) end
-    end
-    local ok,err=pcall(function()
-        if o.preset=="Extrude" then
-            assert(allowUpload,"Authorize one mesh upload before Generate")
-            local part=Extrude.build(path,o,source,false,function() return not unloading and widget.Enabled and not RunService:IsRunning() end,overrides.ExtrudedMesh)
-            part.Parent=output; count=1; return
-        end
-        if o.preset=="Deform" then
-            validAsset(source)
-            assert(allowUpload,"Authorize one mesh upload before Generate (Deform only)")
-            local part=Deform.build(source,path,o,function() return not unloading and widget.Enabled and not RunService:IsRunning() end); part.Parent=output; count=1; return
-        end
-        if o.preset=="Custom" then
-            local per=validAsset(source)
-            local ds=G.instances(path,o.spacing,math.floor(MAX_PARTS/per))
-            for _,d in ipairs(ds) do
-                local p,f,_,u=frame(d)
-                local c=cloneAsset(source)
-                local cf=CFrame.lookAt(p,p+f,u)*CFrame.Angles(0,math.rad(o.yaw),0)*CFrame.Angles(0,0,math.rad(o.roll))
-                c.Parent=output
-                c:PivotTo(cf)
-                local function configure(part) part.Anchored=true; part.CanCollide=o.collide; part.CanTouch=false end
-                if c:IsA("BasePart") then configure(c) end
-                for _,child in ipairs(c:GetDescendants()) do if child:IsA("BasePart") then configure(child) end end
-                count=count+per
-            end
-            return
-        end
-        if o.preset=="Wall" or o.preset=="Fence" or o.preset=="Road" then assert(o.height&gt;0,"Height must be positive for this preset") end
-        local ds=G.segments(path,o.step,2000)
-        for i=1,#ds-1 do
-            local a,_,ra,ua=frame(ds[i]); local b,_,rb,ub=frame(ds[i+1])
-            local up=ua+ub; up=up.Magnitude&gt;1e-4 and up.Unit or ua
-            if o.preset=="Rail" then
-                for _,side in ipairs({-1,1}) do
-                    local aa=a+ra*o.width/2*side+ua*o.height
-                    local bb=b+rb*o.width/2*side+ub*o.height
-                    beam("RailFoot",aa,bb,up,0.30,0.10,Enum.Material.Metal,steel,0.06)
-                    beam("RailHead",aa+ua*0.11,bb+ub*0.11,up,0.13,0.17,Enum.Material.Metal,steel,0.06)
-                end
-            elseif o.preset=="Road" then
-                beam("RoadSurface",a-ua*o.height/2,b-ub*o.height/2,up,o.width,o.height,Enum.Material.Asphalt,asphalt,0.12)
-                for _,side in ipairs({-1,1}) do
-                    beam("EdgeLine",a+ra*(o.width/2-0.3)*side+ua*0.025,b+rb*(o.width/2-0.3)*side+ub*0.025,up,0.10,0.035,Enum.Material.SmoothPlastic,Color3.fromRGB(220,220,210),0.06)
-                end
-            elseif o.preset=="Wall" then
-                beam("Wall",a+ua*o.height/2,b+ub*o.height/2,up,o.width,o.height,Enum.Material.Concrete,concrete,0.12)
-            elseif o.preset=="Fence" then
-                for _,h in ipairs({0.38,0.82}) do beam("FenceRail",a+ua*o.height*h,b+ub*o.height*h,up,o.width,0.20,Enum.Material.Wood,timber,0.06) end
-            elseif o.preset=="Pipe" then
-                local aa=a+ua*o.height; local bb=b+ub*o.height
-                local cf,len=axisCF(aa,bb,up)
-                if cf then
-                    add("Pipe",cf*CFrame.Angles(0,math.pi/2,0),Vector3.new(len+0.04,o.width,o.width),Enum.Material.Metal,steel,Enum.PartType.Cylinder)
-                    if i&gt;1 then add("Joint",CFrame.new(aa),Vector3.new(o.width,o.width,o.width),Enum.Material.Metal,steel,Enum.PartType.Ball) end
-                end
-            end
-        end
-        if o.preset=="Rail" or o.preset=="Fence" or o.preset=="Road" then
-            for _,d in ipairs(G.instances(path,o.spacing,2000)) do
-                local p,f,_,u=frame(d); local cf=CFrame.lookAt(p,p+f,u)
-                if o.preset=="Rail" then
-                    add("Sleeper",cf*CFrame.new(0,o.height-0.14,0),Vector3.new(o.width+1.25,0.20,0.40),Enum.Material.Wood,timber)
-                elseif o.preset=="Fence" then
-                    add("FencePost",cf*CFrame.new(0,o.height/2,0),Vector3.new(o.width*1.7,o.height,o.width*1.7),Enum.Material.Wood,timber)
-                else
-                    local len=math.min(2,o.spacing*0.45,path.length)
-                    if d-len/2&gt;=0 and d+len/2&lt;=path.length then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),Enum.Material.SmoothPlastic,Color3.fromRGB(233,184,62)) end
-                end
-            end
-        end
-    end)
-    if not ok then output:Destroy(); error(err,0) end
-    return output,count
-end
-local function makeMeta(o,template,pivot,savedLayers)
-    local meta=Instance.new("Folder"); meta.Name="PathData"
-    for k,v in pairs(o) do meta:SetAttribute(k,v) end
-    meta:SetAttribute("PointCount",#points)
-    meta:SetAttribute("CoordinateSpace","Local")
-    for i,pos in ipairs(points) do local val=Instance.new("Vector3Value"); val.Name=string.format("P%03d",i); val.Value=pivot:PointToObjectSpace(pos); val.Parent=meta end
-    local ref=Instance.new("ObjectValue"); ref.Name="Asset"; ref.Value=template; ref.Parent=meta
-    Layers.write(meta,savedLayers)
-    return meta
-end
+
+-- Commit / load ----------------------------------------------------------------
 local function commit(allowUpload)
-    editAllowed(); stopMode()
-    local o=options(); local path=pathFor()
+    editAllowed(); stopMode(); storeFields()
+    local path=pathFor()
     local target=root
     local pivot=target and target:GetPivot() or CFrame.new(points[1])
     local oldGenerated,oldMeta
     local function checkTarget()
-        assert(not unloading and widget.Enabled and not RunService:IsRunning(),"Editor closed or play testing started")
+        assert(canContinue(),"Editor closed or play testing started")
         if target then
             assert(target:IsDescendantOf(workspace) and target:GetAttribute("PathForgeSchema")==1,"Saved path no longer exists")
             assert(target:FindFirstChild("Generated")==loadedOutput and target:FindFirstChild("PathData")==loadedMeta,"Path changed externally; reload before generating")
@@ -594,44 +478,46 @@ local function commit(allowUpload)
         end
     end
     checkTarget()
-    local source=(o.preset=="Custom" or o.preset=="Deform" or o.preset=="Extrude") and asset or nil
-    local output,meta,createdLibrary,recording
-    local pending={}
-    local snapshots={}
-    local savedLayers={}
-    local overlays
-    local count
+    local output,meta,createdLibrary,recording,overlays,count
+    local pending,snapshots,savedLayers,savedEntries={}, {}, {}, {}
     local createdTarget=false
     local success,err=pcall(function()
         local library=Storage:FindFirstChild("PathForgeAssets")
         if library then assert(library:IsA("Folder"),"PathForgeAssets must be a Folder") end
         local function snapshot(a)
-            validAsset(a); assert(a.Parent,"Source asset was removed")
+            Assets.count(a); assert(a.Parent,"Source asset was removed")
             assert(not target or (a~=target and not a:IsDescendantOf(target)),"Choose a source outside the active generated path")
             assert(not preview or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
             if library and a:IsDescendantOf(library) then return a end
             if snapshots[a] then return snapshots[a] end
-            local clone=cloneAsset(a)
+            local clone=Assets.clone(a)
             clone.Name=a.Name.."_"..Http:GenerateGUID(false):sub(1,8)
             pending[#pending+1]=clone; snapshots[a]=clone
             return clone
         end
-        local template
-        if o.preset=="Custom" or o.preset=="Deform" or (o.preset=="Extrude" and source) then template=snapshot(source) end
+        for i,e in ipairs(entries) do
+            local copy={o=table.clone(e.o),styles=e.styles,enabled=e.enabled,source=nil}
+            local needs=e.o.preset=="Custom" or e.o.preset=="Deform"
+            if e.source and (needs or e.o.preset=="Extrude") then
+                if e.enabled then copy.source=snapshot(e.source) else copy.source=e.source end
+            elseif needs and e.enabled then
+                error(e.o.preset=="Custom" and "Select a custom asset for the Custom generator" or "Select a MeshPart for the Deform generator",0)
+            end
+            savedEntries[i]=copy
+        end
         for i,l in ipairs(repeatLayers) do
             local copy=table.clone(l)
             if l.source then copy.source=snapshot(l.source) else assert(not l.enabled,"Enabled layer has a missing source") end
             savedLayers[i]=copy
         end
         local layerCount
-        overlays,layerCount=Layers.build(path,savedLayers,validAsset,cloneAsset,MAX_PARTS,false)
-        -- A mesh generator uses exactly one part. Preflight overlay budget before upload.
-        if o.preset=="Extrude" or o.preset=="Deform" then assert(layerCount&lt;MAX_PARTS,"No budget left for base mesh") end
-        output,count=build(path,o,template or source,allowUpload)
-        assert(count+layerCount&lt;=MAX_PARTS,"Combined base and layer budget exceeded")
+        overlays,layerCount=Layers.build(path,savedLayers,Assets.count,Assets.clone,MAX_PARTS,false)
+        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount})
+        output.Name="Generated"
         overlays.Parent=output; count+=layerCount
         checkTarget()
-        meta=makeMeta(o,template,pivot,savedLayers)
+        meta=Instance.new("Folder"); meta.Name="PathData"
+        Persist.write(meta,{points=points,smooth=smooth,entries=savedEntries,layers=savedLayers},pivot)
         recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
         assert(recording,"Cannot start Studio undo recording. Try again.")
         if #pending&gt;0 then
@@ -642,7 +528,7 @@ local function commit(allowUpload)
         end
         if not target then
             target=Instance.new("Model"); createdTarget=true
-            target.Name="PF_"..o.preset; target:SetAttribute("PathForgeSchema",1)
+            target.Name="PF_"..savedEntries[1].o.preset; target:SetAttribute("PathForgeSchema",1)
             target.WorldPivot=pivot
         else
             oldGenerated=target:FindFirstChild("Generated"); oldMeta=target:FindFirstChild("PathData")
@@ -654,7 +540,7 @@ local function commit(allowUpload)
         History:FinishRecording(recording,Enum.FinishRecordingOperation.Commit)
         recording=nil
         root=target; loadedPivot=target:GetPivot(); loadedMeta=meta; loadedOutput=output
-        if template then asset=template end
+        for i,e in ipairs(savedEntries) do entries[i].source=e.source end
         repeatLayers=savedLayers; syncLayers()
     end)
     if not success then
@@ -680,63 +566,60 @@ local function loadSelected()
     while s and s~=workspace and s:GetAttribute("PathForgeSchema")~=1 do s=s.Parent end
     assert(s and s~=workspace and s:GetAttribute("PathForgeSchema")==1,"Select a PathForge model or one of its parts")
     local meta=s:FindFirstChild("PathData"); assert(meta and s:FindFirstChild("Generated"),"Missing saved path data")
-    local n=meta:GetAttribute("PointCount"); assert(type(n)=="number" and n&gt;=2 and n&lt;=MAX_POINTS,"Invalid saved point count")
-    local pp={}
-    for i=1,n do local v=meta:FindFirstChild(string.format("P%03d",i)); assert(v and v:IsA("Vector3Value"),"Missing control point"); pp[i]=meta:GetAttribute("CoordinateSpace")=="Local" and s:GetPivot():PointToWorldSpace(v.Value) or v.Value end
-    local pr=meta:GetAttribute("preset"); assert(table.find(presets,pr),"Unknown preset")
-    local loadedLayers=Layers.read(meta)
-    repeatLayers=loadedLayers; layerIndex=#repeatLayers&gt;0 and 1 or 0; syncLayers()
-    resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated"); points=pp; selected=1; preset=pr; smooth=meta:GetAttribute("smooth")==true; collide=meta:GetAttribute("collide")==true
-    for _,k in ipairs({"width","height","spacing","step","offset","yaw","roll","sides","uvLength","uvWidth","angle","tolerance"}) do local v=meta:GetAttribute(k); if type(v)=="number" then fields[k].Text=tostring(v) elseif k=="sides" then fields[k].Text="16" elseif k=="uvLength" or k=="uvWidth" then fields[k].Text="4" elseif k=="angle" then fields[k].Text="8" elseif k=="tolerance" then fields[k].Text="0.05" end end
-    fields.profile.Text=meta:GetAttribute("profile") or "rectangle"
-    local savedFidelity=meta:GetAttribute("fidelity"); fidelity=table.find(collisionModes,savedFidelity) and savedFidelity or "Default"; fidelityButton.Text=T("Mesh collision: "..fidelity)
-    local ref=meta:FindFirstChild("Asset"); asset=ref and ref:IsA("ObjectValue") and ref.Value or nil
-    local saved=meta:GetAttribute("materialStyles"); styles=type(saved)=="string" and Http:JSONDecode(saved) or {}; syncMaterials()
-    syncButtons(); refreshLabel(); refreshPreview(); say("Loaded saved path. Generate updates only this model's output.")
+    local state=Persist.read(meta,s:GetPivot())
+    repeatLayers=state.layers; layerIndex=#repeatLayers&gt;0 and 1 or 0; syncLayers()
+    resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated")
+    points=state.points; selected=1; smooth=state.smooth
+    entries=state.entries; current=1; materialSlot=1; loadFields()
+    syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
+    say("Loaded saved path. Generate updates only this model's output.")
 end
-currentSection="Build"
+
+-- 04 Build -------------------------------------------------------------------
+ui.section="Build"
 label("04   BUILD / SAVED PATHS",22,C.muted)
 local function previewNow(manual)
-    if previewBusy or busy or not widget.Enabled or RunService:IsRunning() then return end
+    if previewBusy or busy or not canContinue() then return end
     if #points&lt;2 then if manual then say("Add at least two points",true) end; return end
     if not preview then refreshPreview() end
     clearMeshPreview(); previewDue=nil; resetUpload()
     local revision=previewRevision
-    local function active() return revision==previewRevision and not unloading and widget.Enabled and not RunService:IsRunning() end
+    local function active() return revision==previewRevision and canContinue() end
     previewBusy=true
-    local part,mesh,overlays
+    local folder,meshes,overlays
     local ok,err=pcall(function()
-        local o,path=options(),pathFor()
+        storeFields()
+        local path=pathFor()
         local list={}
         for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
-        overlays=Layers.build(path,list,validAsset,cloneAsset,1000,true)
-        if o.preset=="Extrude" then
-            part,mesh=Extrude.build(path,o,asset,true,active,styles.ExtrudedMesh)
-        elseif o.preset=="Deform" then
-            validAsset(asset); part,mesh=Deform.build(asset,path,o,active,true)
-        end
+        local layerCount,partCount
+        overlays,layerCount=Layers.build(path,list,Assets.count,Assets.clone,1000,true)
+        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET})
         if not active() then return end
-        if part then part.Parent=preview end
-        overlays.Archivable=false; overlays.Parent=preview
-        meshPreview=part; previewEditable=mesh; layerPreview=overlays
-        part=nil; mesh=nil; overlays=nil
-        if manual then say("Preview ready. Part-based base generators show guides only; repeat layers and mesh bases show geometry.") end
+        folder.Name="Preview"; folder.Archivable=false
+        overlays.Archivable=false; overlays.Parent=folder
+        folder.Parent=preview
+        previewFolder=folder; previewMeshes=meshes
+        folder=nil; meshes=nil; overlays=nil
+        if manual then say(string.format("Preview ready: %d parts, %d layer parts. Nothing was uploaded.",partCount,layerCount)) end
     end)
-    if part then part:Destroy() end; if mesh then mesh:Destroy() end; if overlays then overlays:Destroy() end
+    if folder then folder:Destroy() end
+    if meshes then for _,m in ipairs(meshes) do m:Destroy() end end
+    if overlays then overlays:Destroy() end
     previewBusy=false
     if not ok and active() then say("Preview: "..tostring(err),true) end
 end
 button("Preview now (no upload)",guarded(function() editAllowed(); stopMode(); previewNow(true) end),true)
-liveButton=button("Auto preview: OFF",guarded(function()
-    editAllowed(); setLive(not liveEnabled); if not liveEnabled then clearMeshPreview() end
-end))
-button("Clear preview / disable auto",function() setLive(false); clearMeshPreview() end)
-uploadButton=button("Authorize ONE mesh upload: OFF",guarded(function()
-    editAllowed(); assert(preset=="Deform" or preset=="Extrude","Only mesh generators need an asset upload")
+liveButton=row({
+    {"Auto preview: OFF",guarded(function() editAllowed(); setLive(not liveEnabled); if not liveEnabled then clearMeshPreview() end end)},
+    {"Clear preview",function() setLive(false); clearMeshPreview() end},
+})[1]
+uploadButton=button("Authorize mesh uploads for next Generate: OFF",guarded(function()
+    editAllowed(); assert(hasMeshEntry(),"Only mesh generators need an asset upload")
     setLive(false)
     uploadArmed=not uploadArmed
-    uploadButton.Text=T(uploadArmed and "Authorize ONE mesh upload: ON" or "Authorize ONE mesh upload: OFF")
-    say(uploadArmed and "Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo." or "Mesh upload disabled.")
+    uploadButton.Text=T(uploadArmed and "Authorize mesh uploads for next Generate: ON" or "Authorize mesh uploads for next Generate: OFF")
+    say(uploadArmed and "Next Generate uploads one new mesh per enabled mesh generator to Roblox under your account. They may remain even after undo." or "Mesh upload disabled.")
 end))
 button("Generate / update saved path",guarded(function()
     assert(not previewBusy,"Wait for preview to finish before generating")
@@ -749,9 +632,12 @@ button("Generate / update saved path",guarded(function()
 end),true)
 button("Load selected saved path",guarded(loadSelected))
 button("Run geometry self-tests",guarded(function() editAllowed(); local n=SelfTest.run(); say(tostring(n).." geometry tests passed") end))
-button("Hide draft guides",function() stopMode(); clearPreview(); say("Guides hidden. Draft retained.") end)
-button("Show draft guides",guarded(function() editAllowed(); refreshPreview() end))
-label("Custom repeats source models; Deform bends one static MeshPart. Material slots affect built-in geometry. Generate commits; draft edits do not.",72,C.muted)
+row({
+    {"Hide draft guides",function() stopMode(); clearPreview(); say("Guides hidden. Draft retained.") end},
+    {"Show draft guides",guarded(function() editAllowed(); refreshPreview() end)},
+})
+label("Generators share one path and are built in order. Custom repeats a model; Deform bends one static MeshPart; Extrude sweeps a profile. Generate commits; draft edits do not.",72,C.muted)
+
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
     tool:SetActive(widget.Enabled)
     if widget.Enabled then refreshPreview() else resetUpload(); stopMode(); clearPreview() end
@@ -765,7 +651,7 @@ end)
 tool.Click:Connect(function() widget.Enabled=not widget.Enabled end)
 plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
 for _,field in pairs(fields) do field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
-syncButtons(); syncMaterials(); syncLayers(); selectSection("Path"); refreshLabel(); if widget.Enabled then refreshPreview() end
+loadFields(); syncButtons(); syncMaterials(); syncLayers(); ui.select("Path"); refreshLabel(); if widget.Enabled then refreshPreview() end
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX2"><Properties><string name="Name">Geometry</string><ProtectedString name="Source">-- Pure path math; uses only Roblox Vector3 arithmetic.
 local G = {}
@@ -1017,6 +903,8 @@ return D
 local G=require(script.Parent.Geometry)
 local E=require(script.Parent.Extrude)
 local L=require(script.Parent.Layers)
+local P=require(script.Parent.Presets)
+local J=require(script.Parent.Json)
 local T={}
 local function close(a,b,e) assert(math.abs(a-b)&lt;(e or 1e-4),"Expected "..tostring(b)..", got "..tostring(a)) end
 function T.run()
@@ -1047,6 +935,8 @@ function T.run()
         l.enabled=false; local _,empty=L.plan(p,{l},function() error("disabled") end,10); assert(empty==0)
     end)
     test(function() assert(not pcall(L.validate,{spacing=0,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true})) end)
+    test(function() local specs=P.parts(G.path({V(0,0,0),V(0,0,-20)},false),P.options("Rail")); assert(#specs==92) end)
+    test(function() local v=J.decode(J.encode({a={1,2},b="x"})); assert(v.a[2]==2 and v.b=="x") end)
     return n
 end
 return T
@@ -1512,10 +1402,45 @@ local ko={
     ["Deform path limit: 2000 studs"]="변형 경로는 최대 2000스터드예요",
     ["Unsupported vertex count"]="지원하지 않는 정점 수예요",
     ["Source needs X width and -Z length"]="소스에 X 방향 폭과 -Z 방향 길이가 있어야 해요",
+
+    -- v0.6 generator stack
+    ["02   GENERATOR STACK"]="02   생성기 스택",
+    ["02A  GENERATOR TYPE / PARAMETERS"]="02A  생성기 종류 / 매개변수",
+    ["02B  EXTRUDE / MESH QUALITY"]="02B  압출 / 메시 품질",
+    ["02C  MATERIAL SLOTS"]="02C  재질 슬롯",
+    ["Previous node"]="이전 노드", ["Next node"]="다음 노드",
+    ["Previous generator"]="이전 생성기", ["Next generator"]="다음 생성기",
+    ["Add generator"]="생성기 추가", ["Remove generator"]="생성기 삭제",
+    ["Generator enabled: ON"]="생성기 사용: 켬", ["Generator enabled: OFF"]="생성기 사용: 끔",
+    ["Generator added. Pick its type and settings; all generators share this path."]="생성기를 추가했어요. 종류와 설정을 고르세요. 모든 생성기가 이 경로를 함께 써요.",
+    ["Clear preview"]="미리보기 지우기",
+    ["Authorize mesh uploads for next Generate: ON"]="다음 생성 때 메시 업로드 허용: 켬",
+    ["Authorize mesh uploads for next Generate: OFF"]="다음 생성 때 메시 업로드 허용: 끔",
+    ["Next Generate uploads one new mesh per enabled mesh generator to Roblox under your account. They may remain even after undo."]="다음 생성 때 켜진 메시 생성기마다 새 메시가 하나씩 내 계정으로 Roblox에 업로드돼요. 실행 취소해도 남아 있을 수 있어요.",
+    ["Generators share one path and are built in order. Custom repeats a model; Deform bends one static MeshPart; Extrude sweeps a profile. Generate commits; draft edits do not."]="생성기들은 경로 하나를 함께 쓰고 순서대로 만들어져요. 커스텀은 모델을 반복하고, 변형은 정적 MeshPart 하나를 구부리고, 압출은 단면을 경로를 따라 늘려요. 생성을 눌러야 반영되고, 초안 편집만으로는 바뀌지 않아요.",
+    ["No material slots for this generator"]="이 생성기에는 재질 슬롯이 없어요",
+    ["A path needs 1–8 generators"]="경로 하나에 생성기는 1~8개여야 해요",
+    ["A path needs at least one generator"]="경로에는 생성기가 하나 이상 있어야 해요",
+    ["Maximum 8 generators per path"]="경로 하나에 생성기는 최대 8개예요",
+    ["Authorize mesh uploads before Generate"]="생성하기 전에 메시 업로드 허용을 켜세요",
+    ["Invalid collision switch"]="충돌 설정 값이 잘못됐어요",
+    ["Invalid generator options"]="생성기 설정이 잘못됐어요",
+    ["Invalid profile text"]="단면 텍스트가 잘못됐어요",
+    ["Invalid saved generator"]="저장된 생성기가 잘못됐어요",
+    ["Not a part-based generator"]="파트 기반 생성기가 아니에요",
+    ["Select a MeshPart for the Deform generator"]="변형 생성기에 쓸 MeshPart를 선택하세요",
+    ["Select a custom asset for the Custom generator"]="커스텀 생성기에 쓸 에셋을 선택하세요",
+    ["JSON cannot store NaN or infinity"]="JSON에는 NaN이나 무한대를 저장할 수 없어요",
+    ["JSON nesting too deep"]="JSON 중첩이 너무 깊어요",
+    ["JSON object keys must be strings"]="JSON 객체 키는 문자열이어야 해요",
+    ["JSON text expected"]="JSON 텍스트가 필요해요",
 }
 
 -- Formatted messages: Lua pattern -&gt; function returning the Korean text.
 local patterns={
+    {"^Part budget exceeded %((%d+)%)$",function(n) return "파트 한도("..n.."개)를 넘었어요" end},
+    {"^Generator (%d+) / (%d+)  |  (.+)$",function(i,n,s) return "생성기 "..i.." / "..n.."  |  "..Locale.t(s) end},
+    {"^Preview ready: (%d+) parts, (%d+) layer parts%. Nothing was uploaded%.$",function(a,b) return "미리보기 준비 완료: 파트 "..a.."개, 레이어 파트 "..b.."개. 업로드는 하지 않았어요." end},
     {"^(%d+) points   |   Node (%d+)   |   (.+)$",function(n,i,s) return "점 "..n.."개   |   노드 "..i.."   |   "..Locale.t(s) end},
     {"^Generator: (.+)$",function(s) return "생성기: "..Locale.t(s) end},
     {"^Mesh collision: (.+)$",function(s) return "메시 충돌: "..s end},
@@ -1556,4 +1481,559 @@ function Locale.t(text)
 end
 
 return Locale
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">Version</string><ProtectedString name="Source">-- Single source of the plugin version shown in the UI and written to saves.
+return {FULL="0.6.0",SHORT="0.6"}
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX11"><Properties><string name="Name">Json</string><ProtectedString name="Source">-- Small deterministic JSON codec (sorted object keys). Used for saved settings,
+-- recipes and cache keys so the same input always produces the same text.
+-- Reads HttpService JSON written by earlier PathForge versions.
+local J={}
+local function isArray(t)
+    local n=0
+    for k in pairs(t) do
+        if type(k)~="number" or k&lt;1 or k%1~=0 then return false end
+        n+=1
+    end
+    for i=1,n do if t[i]==nil then return false end end
+    return true,n
+end
+local escapes={['"']='\\"',["\\"]="\\\\",["\b"]="\\b",["\f"]="\\f",["\n"]="\\n",["\r"]="\\r",["\t"]="\\t"}
+local function str(s)
+    return '"'..s:gsub('[%c"\\]',function(c) return escapes[c] or string.format("\\u%04x",c:byte()) end)..'"'
+end
+local function encode(v,depth)
+    assert(depth&lt;=32,"JSON nesting too deep")
+    local t=type(v)
+    if t=="nil" then return "null"
+    elseif t=="boolean" then return tostring(v)
+    elseif t=="number" then
+        assert(v==v and v~=math.huge and v~=-math.huge,"JSON cannot store NaN or infinity")
+        if v%1==0 and math.abs(v)&lt;2^53 then return string.format("%d",v) end
+        return string.format("%.14g",v)
+    elseif t=="string" then return str(v)
+    elseif t=="table" then
+        local array,n=isArray(v)
+        local out={}
+        if array then
+            for i=1,n do out[i]=encode(v[i],depth+1) end
+            return "["..table.concat(out,",").."]"
+        end
+        local keys={}
+        for k in pairs(v) do assert(type(k)=="string","JSON object keys must be strings"); keys[#keys+1]=k end
+        table.sort(keys)
+        for i,k in ipairs(keys) do out[i]=str(k)..":"..encode(v[k],depth+1) end
+        return "{"..table.concat(out,",").."}"
+    end
+    error("Cannot encode "..t.." as JSON",0)
+end
+function J.encode(v) return encode(v,0) end
+function J.decode(s)
+    assert(type(s)=="string","JSON text expected")
+    local i=1
+    local function ws() i=s:find("[^ \t\r\n]",i) or #s+1 end
+    local function fail(msg) error("Invalid JSON at "..i..": "..msg,0) end
+    local value
+    local function readString()
+        i+=1
+        local out={}
+        while true do
+            local c=s:sub(i,i)
+            if c=="" then fail("unterminated string") end
+            if c=='"' then i+=1; break end
+            if c=="\\" then
+                local e=s:sub(i+1,i+1)
+                local map={['"']='"',["\\"]="\\",["/"]="/",b="\b",f="\f",n="\n",r="\r",t="\t"}
+                if map[e] then out[#out+1]=map[e]; i+=2
+                elseif e=="u" then
+                    local hex=s:sub(i+2,i+5)
+                    local code=tonumber(hex,16); if not code or #hex&lt;4 then fail("bad escape") end
+                    out[#out+1]=utf8.char(code); i+=6
+                else fail("bad escape") end
+            else out[#out+1]=c; i+=1 end
+        end
+        return table.concat(out)
+    end
+    value=function(depth)
+        if depth&gt;32 then fail("nesting too deep") end
+        ws()
+        local c=s:sub(i,i)
+        if c=="{" then
+            i+=1; local t={}; ws()
+            if s:sub(i,i)=="}" then i+=1; return t end
+            while true do
+                ws(); if s:sub(i,i)~='"' then fail("key expected") end
+                local k=readString(); ws()
+                if s:sub(i,i)~=":" then fail("':' expected") end
+                i+=1; t[k]=value(depth+1); ws()
+                local d=s:sub(i,i); i+=1
+                if d=="}" then return t elseif d~="," then fail("',' or '}' expected") end
+            end
+        elseif c=="[" then
+            i+=1; local t={}; ws()
+            if s:sub(i,i)=="]" then i+=1; return t end
+            while true do
+                t[#t+1]=value(depth+1); ws()
+                local d=s:sub(i,i); i+=1
+                if d=="]" then return t elseif d~="," then fail("',' or ']' expected") end
+            end
+        elseif c=='"' then return readString()
+        elseif s:sub(i,i+3)=="true" then i+=4; return true
+        elseif s:sub(i,i+4)=="false" then i+=5; return false
+        elseif s:sub(i,i+3)=="null" then i+=4; return nil
+        else
+            local num=s:match("^-?%d+%.?%d*[eE]?[-+]?%d*",i)
+            local v=num and tonumber(num)
+            if not v then fail("value expected") end
+            i+=#num; return v
+        end
+    end
+    local result=value(0); ws()
+    if i&lt;=#s then fail("trailing text") end
+    return result
+end
+return J
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX12"><Properties><string name="Name">Presets</string><ProtectedString name="Source">-- Built-in generators. Part-based generators return plain part specs
+-- ({name, cf, size, material, color, shape}) so they can be tested and
+-- previewed without creating Instances.
+local G=require(script.Parent.Geometry)
+local P={}
+P.LIST={"Rail","Road","Wall","Fence","Pipe","Custom","Deform","Extrude"}
+P.MESH={Deform=true,Extrude=true}
+P.PART_BASED={Rail=true,Road=true,Wall=true,Fence=true,Pipe=true}
+P.DEFAULTS={
+    Rail={width=3.2,height=0.2,spacing=1.8,step=1},
+    Road={width=12,height=0.35,spacing=8,step=2},
+    Wall={width=0.8,height=8,spacing=5,step=2},
+    Fence={width=0.3,height=4,spacing=5,step=2},
+    Pipe={width=1.4,height=1.5,spacing=8,step=1},
+    Custom={width=1,height=0,spacing=5,step=2},
+    Deform={width=1,height=0,spacing=5,step=2},
+    Extrude={width=6,height=1,spacing=5,step=2},
+}
+-- Material slot names each generator can produce, for the material slot picker.
+P.SLOTS={
+    Rail={"RailFoot","RailHead","Sleeper"},
+    Road={"RoadSurface","EdgeLine","CenterMark"},
+    Wall={"Wall"},
+    Fence={"FenceRail","FencePost"},
+    Pipe={"Pipe","Joint"},
+    Custom={},
+    Deform={},
+    Extrude={"ExtrudedMesh"},
+}
+-- Numeric options shared by every generator: key -&gt; {min, max, default}.
+P.NUMBERS={
+    width={0.05,100,3.2}, height={-50,100,0.2}, spacing={0.2,200,1.8}, step={0.15,100,1},
+    offset={-100,100,0}, yaw={-360,360,0}, roll={-360,360,0},
+    sides={3,64,16}, uvLength={0.05,1000,4}, uvWidth={0.05,1000,4},
+    angle={1,90,8}, tolerance={0.005,10,0.05},
+}
+P.FIDELITY={"Default","Box","Hull","PreciseConvexDecomposition"}
+local STEEL={103,110,119}
+local TIMBER={91,67,46}
+local ASPHALT={54,58,63}
+local CONCRETE={129,130,124}
+local LINE={220,220,210}
+local MARK={233,184,62}
+
+function P.isPreset(name) return table.find(P.LIST,name)~=nil end
+
+-- Default option table for a preset (used for new generators and old saves).
+function P.options(preset)
+    assert(P.isPreset(preset),"Unknown preset")
+    local o={preset=preset,profile="rectangle",fidelity="Default",collide=true}
+    for k,spec in pairs(P.NUMBERS) do o[k]=spec[3] end
+    for k,v in pairs(P.DEFAULTS[preset]) do o[k]=v end
+    return o
+end
+
+-- Validates and normalizes an option table in place; returns it.
+function P.validate(o)
+    assert(type(o)=="table","Invalid generator options")
+    assert(P.isPreset(o.preset),"Unknown preset")
+    for k,spec in pairs(P.NUMBERS) do
+        local v=o[k]
+        assert(type(v)=="number" and v==v and v&gt;=spec[1] and v&lt;=spec[2],k.." must be between "..spec[1].." and "..spec[2])
+    end
+    o.sides=math.floor(o.sides)
+    assert(type(o.profile)=="string" and #o.profile&lt;=2000,"Invalid profile text")
+    assert(table.find(P.FIDELITY,o.fidelity),"Invalid collision fidelity")
+    assert(type(o.collide)=="boolean","Invalid collision switch")
+    return o
+end
+
+local function axisCF(a,b,up)
+    local v=b-a
+    if v.Magnitude&lt;1e-5 then return nil,0 end
+    if math.abs(v.Unit:Dot(up))&gt;0.995 then up=Vector3.new(0,0,1); if math.abs(v.Unit:Dot(up))&gt;0.995 then up=Vector3.new(1,0,0) end end
+    return CFrame.lookAt((a+b)/2,b,up),v.Magnitude
+end
+P.axisCF=axisCF
+
+-- Returns an array of part specs for a part-based preset.
+function P.parts(path,o,limit,shown)
+    assert(P.PART_BASED[o.preset],"Not a part-based generator")
+    limit=limit or 6500; shown=shown or limit
+    local specs={}
+    local function add(name,cf,size,material,color,shape)
+        assert(#specs&lt;limit,"Part budget exceeded ("..shown..")")
+        specs[#specs+1]={name=name,cf=cf,size=size,material=material,color=color,shape=shape}
+    end
+    local function frame(d)
+        local p,f,r,u=G.frame(path,d); return p+Vector3.new(0,o.offset,0),f,r,u
+    end
+    local function beam(name,a,b,up,w,h,mat,col,overlap)
+        local cf,len=axisCF(a,b,up)
+        if cf then add(name,cf,Vector3.new(w,h,len+(overlap or 0)),mat,col) end
+    end
+    if o.preset=="Wall" or o.preset=="Fence" or o.preset=="Road" then assert(o.height&gt;0,"Height must be positive for this preset") end
+    local ds=G.segments(path,o.step,2000)
+    for i=1,#ds-1 do
+        local a,_,ra,ua=frame(ds[i]); local b,_,rb,ub=frame(ds[i+1])
+        local up=ua+ub; up=up.Magnitude&gt;1e-4 and up.Unit or ua
+        if o.preset=="Rail" then
+            for _,side in ipairs({-1,1}) do
+                local aa=a+ra*o.width/2*side+ua*o.height
+                local bb=b+rb*o.width/2*side+ub*o.height
+                beam("RailFoot",aa,bb,up,0.30,0.10,"Metal",STEEL,0.06)
+                beam("RailHead",aa+ua*0.11,bb+ub*0.11,up,0.13,0.17,"Metal",STEEL,0.06)
+            end
+        elseif o.preset=="Road" then
+            beam("RoadSurface",a-ua*o.height/2,b-ub*o.height/2,up,o.width,o.height,"Asphalt",ASPHALT,0.12)
+            for _,side in ipairs({-1,1}) do
+                beam("EdgeLine",a+ra*(o.width/2-0.3)*side+ua*0.025,b+rb*(o.width/2-0.3)*side+ub*0.025,up,0.10,0.035,"SmoothPlastic",LINE,0.06)
+            end
+        elseif o.preset=="Wall" then
+            beam("Wall",a+ua*o.height/2,b+ub*o.height/2,up,o.width,o.height,"Concrete",CONCRETE,0.12)
+        elseif o.preset=="Fence" then
+            for _,h in ipairs({0.38,0.82}) do beam("FenceRail",a+ua*o.height*h,b+ub*o.height*h,up,o.width,0.20,"Wood",TIMBER,0.06) end
+        elseif o.preset=="Pipe" then
+            local aa=a+ua*o.height; local bb=b+ub*o.height
+            local cf,len=axisCF(aa,bb,up)
+            if cf then
+                add("Pipe",cf*CFrame.Angles(0,math.pi/2,0),Vector3.new(len+0.04,o.width,o.width),"Metal",STEEL,"Cylinder")
+                if i&gt;1 then add("Joint",CFrame.new(aa),Vector3.new(o.width,o.width,o.width),"Metal",STEEL,"Ball") end
+            end
+        end
+    end
+    if o.preset=="Rail" or o.preset=="Fence" or o.preset=="Road" then
+        for _,d in ipairs(G.instances(path,o.spacing,2000)) do
+            local p,f,_,u=frame(d); local cf=CFrame.lookAt(p,p+f,u)
+            if o.preset=="Rail" then
+                add("Sleeper",cf*CFrame.new(0,o.height-0.14,0),Vector3.new(o.width+1.25,0.20,0.40),"Wood",TIMBER)
+            elseif o.preset=="Fence" then
+                add("FencePost",cf*CFrame.new(0,o.height/2,0),Vector3.new(o.width*1.7,o.height,o.width*1.7),"Wood",TIMBER)
+            else
+                local len=math.min(2,o.spacing*0.45,path.length)
+                if d-len/2&gt;=0 and d+len/2&lt;=path.length then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
+            end
+        end
+    end
+    return specs
+end
+return P
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX13"><Properties><string name="Name">Assets</string><ProtectedString name="Source">-- Source asset checks and safe cloning (scripts, joints and prompts removed).
+local A={}
+local STRIP={"LuaSourceContainer","JointInstance","Constraint","WeldConstraint","ProximityPrompt","ClickDetector"}
+-- Returns the number of BaseParts in a valid Model/BasePart source.
+function A.count(a)
+    assert(a and (a:IsA("Model") or a:IsA("BasePart")),"Select a Model or BasePart")
+    assert(a.Archivable,"Asset must be Archivable")
+    assert(not a:IsA("Terrain"),"Terrain cannot be used as a static asset")
+    local count=a:IsA("BasePart") and 1 or 0
+    for _,d in ipairs(a:GetDescendants()) do
+        if d:IsA("BasePart") then count+=1; assert(d.Archivable,"All source BaseParts must be Archivable") end
+    end
+    assert(count&gt;0,"Asset contains no BaseParts")
+    return count
+end
+function A.clone(a)
+    local c=a:Clone(); assert(c,"Cannot clone asset")
+    for _,d in ipairs(c:GetDescendants()) do
+        for _,class in ipairs(STRIP) do
+            if d:IsA(class) then d:Destroy(); break end
+        end
+    end
+    return c
+end
+-- Anchors every part of a placed clone; previews are also hidden from raycasts and saves.
+function A.configure(c,collide,preview)
+    local function set(part)
+        part.Anchored=true; part.CanCollide=collide and not preview; part.CanTouch=false
+        if preview then part.CanQuery=false; part.Archivable=false end
+    end
+    if c:IsA("BasePart") then set(c) end
+    for _,d in ipairs(c:GetDescendants()) do if d:IsA("BasePart") then set(d) end end
+end
+return A
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX14"><Properties><string name="Name">Builder</string><ProtectedString name="Source">-- Turns a generator stack into Instances. Part-based and Custom generators are
+-- built first so budget failures happen before any mesh upload starts.
+local G=require(script.Parent.Geometry)
+local P=require(script.Parent.Presets)
+local Assets=require(script.Parent.Assets)
+local Materials=require(script.Parent.Materials)
+local Extrude=require(script.Parent.Extrude)
+local Deform=require(script.Parent.Deform)
+local B={MAX_PARTS=6500}
+
+function B.part(parent,spec,collide,preview,style)
+    local p=Instance.new("Part")
+    p.Name=spec.name
+    p.Size=Vector3.new(math.max(spec.size.X,0.05),math.max(spec.size.Y,0.05),math.max(spec.size.Z,0.05))
+    p.CFrame=spec.cf
+    p.Anchored=true; p.CanCollide=collide and not preview; p.CanTouch=false
+    p.Material=Enum.Material[spec.material]; p.Color=Color3.fromRGB(spec.color[1],spec.color[2],spec.color[3])
+    p.TopSurface=Enum.SurfaceType.Smooth; p.BottomSurface=Enum.SurfaceType.Smooth
+    if spec.shape then p.Shape=Enum.PartType[spec.shape] end
+    if preview then p.CanQuery=false; p.Archivable=false end
+    Materials.apply(p,style)
+    p.Parent=parent
+    return p
+end
+
+-- Builds one generator into `folder`. Returns part count and preview meshes.
+function B.entry(path,entry,folder,ctx,budget)
+    local o=entry.o
+    local styles=entry.styles or {}
+    if P.PART_BASED[o.preset] then
+        local specs=P.parts(path,o,budget,ctx.budget or B.MAX_PARTS)
+        for _,spec in ipairs(specs) do B.part(folder,spec,o.collide,ctx.preview,styles[spec.name]) end
+        return #specs
+    elseif o.preset=="Custom" then
+        local per=Assets.count(entry.source)
+        local ds=G.instances(path,o.spacing,math.max(1,math.floor(budget/per)))
+        assert(#ds*per&lt;=budget,"Part budget exceeded ("..(ctx.budget or B.MAX_PARTS)..")")
+        for _,d in ipairs(ds) do
+            local p,f,_,u=G.frame(path,d)
+            p+=Vector3.new(0,o.offset,0)
+            local c=Assets.clone(entry.source)
+            c.Parent=folder
+            c:PivotTo(CFrame.lookAt(p,p+f,u)*CFrame.Angles(0,math.rad(o.yaw),0)*CFrame.Angles(0,0,math.rad(o.roll)))
+            Assets.configure(c,o.collide,ctx.preview)
+        end
+        return #ds*per
+    end
+    assert(budget&gt;=1,"No budget left for base mesh")
+    if not ctx.preview then assert(ctx.allowUpload,"Authorize mesh uploads before Generate") end
+    local part,mesh
+    if o.preset=="Extrude" then
+        part,mesh=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh)
+    else
+        Assets.count(entry.source)
+        part,mesh=Deform.build(entry.source,path,o,ctx.canContinue,ctx.preview)
+    end
+    part.Parent=folder
+    return 1,mesh
+end
+
+-- Builds every enabled generator. ctx = {preview, allowUpload, canContinue, budget}.
+-- Returns the output folder, part count and a list of preview EditableMeshes.
+function B.stack(path,entries,ctx)
+    local budget=ctx.budget or B.MAX_PARTS
+    local output=Instance.new("Folder"); output.Name="Generators"
+    local meshes={}
+    local count=0
+    local ok,err=pcall(function()
+        local order={}
+        for i,entry in ipairs(entries) do
+            if entry.enabled~=false then order[#order+1]=i end
+        end
+        -- Mesh generators last: nothing is uploaded unless every other generator fits.
+        table.sort(order,function(a,b)
+            local ma,mb=P.MESH[entries[a].o.preset] and 1 or 0,P.MESH[entries[b].o.preset] and 1 or 0
+            if ma~=mb then return ma&lt;mb end
+            return a&lt;b
+        end)
+        local meshCount=0
+        for _,i in ipairs(order) do if P.MESH[entries[i].o.preset] then meshCount+=1 end end
+        for _,i in ipairs(order) do
+            local entry=entries[i]
+            local folder=Instance.new("Folder"); folder.Name=string.format("G%02d_%s",i,entry.o.preset); folder.Parent=output
+            -- Keep one part of budget per remaining mesh generator.
+            local reserve=P.MESH[entry.o.preset] and 0 or meshCount
+            local n,mesh=B.entry(path,entry,folder,ctx,budget-count-reserve)
+            count+=n
+            if P.MESH[entry.o.preset] then meshCount-=1 end
+            if mesh then meshes[#meshes+1]=mesh end
+            assert(count&lt;=budget,"Part budget exceeded ("..budget..")")
+        end
+    end)
+    if not ok then
+        output:Destroy()
+        for _,m in ipairs(meshes) do m:Destroy() end
+        error(err,0)
+    end
+    return output,count,meshes
+end
+return B
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX15"><Properties><string name="Name">Persist</string><ProtectedString name="Source">-- Saved path data (PathData folder) for generated models.
+-- Format 2 stores a generator stack; format 1 (v0.1–v0.5) stored one generator
+-- as attributes on PathData and is still read.
+local P=require(script.Parent.Presets)
+local Layers=require(script.Parent.Layers)
+local Json=require(script.Parent.Json)
+local S={FORMAT=2,MAX_GENERATORS=8,MAX_POINTS=128}
+local OPTION_KEYS={"preset","profile","fidelity","collide"}
+for k in pairs(P.NUMBERS) do OPTION_KEYS[#OPTION_KEYS+1]=k end
+table.sort(OPTION_KEYS)
+S.OPTION_KEYS=OPTION_KEYS
+
+local function decodeStyles(text)
+    if type(text)~="string" or text=="" then return {} end
+    local ok,v=pcall(Json.decode,text)
+    return ok and type(v)=="table" and v or {}
+end
+
+-- Reads one generator's options from attributes; missing values use defaults.
+local function readOptions(get)
+    local preset=get("preset")
+    assert(P.isPreset(preset),"Unknown preset")
+    local o=P.options(preset)
+    for k,spec in pairs(P.NUMBERS) do
+        local v=get(k)
+        if type(v)=="number" and v==v and v&gt;=spec[1] and v&lt;=spec[2] then o[k]=v end
+    end
+    local profile=get("profile"); if type(profile)=="string" and profile~="" then o.profile=profile end
+    local fidelity=get("fidelity"); if table.find(P.FIDELITY,fidelity) then o.fidelity=fidelity end
+    local collide=get("collide"); if type(collide)=="boolean" then o.collide=collide end
+    return P.validate(o)
+end
+S.readOptions=readOptions
+
+function S.write(meta,state,pivot)
+    meta:SetAttribute("Format",S.FORMAT)
+    meta:SetAttribute("smooth",state.smooth)
+    meta:SetAttribute("PointCount",#state.points)
+    meta:SetAttribute("CoordinateSpace","Local")
+    for i,pos in ipairs(state.points) do
+        local v=Instance.new("Vector3Value"); v.Name=string.format("P%03d",i); v.Value=pivot:PointToObjectSpace(pos); v.Parent=meta
+    end
+    assert(#state.entries&gt;=1 and #state.entries&lt;=S.MAX_GENERATORS,"A path needs 1–8 generators")
+    local folder=Instance.new("Folder"); folder.Name="Generators"; folder.Parent=meta
+    for i,entry in ipairs(state.entries) do
+        local ref=Instance.new("ObjectValue"); ref.Name=string.format("G%02d",i); ref.Value=entry.source
+        for _,k in ipairs(OPTION_KEYS) do ref:SetAttribute(k,entry.o[k]) end
+        ref:SetAttribute("enabled",entry.enabled~=false)
+        ref:SetAttribute("materialStyles",Json.encode(entry.styles or {}))
+        ref.Parent=folder
+    end
+    Layers.write(meta,state.layers or {})
+end
+
+function S.read(meta,pivot)
+    local n=meta:GetAttribute("PointCount")
+    assert(type(n)=="number" and n&gt;=2 and n&lt;=S.MAX_POINTS,"Invalid saved point count")
+    local localSpace=meta:GetAttribute("CoordinateSpace")=="Local"
+    local points={}
+    for i=1,n do
+        local v=meta:FindFirstChild(string.format("P%03d",i))
+        assert(v and v:IsA("Vector3Value"),"Missing control point")
+        points[i]=localSpace and pivot:PointToWorldSpace(v.Value) or v.Value
+    end
+    local entries={}
+    local folder=meta:FindFirstChild("Generators")
+    if folder then
+        local children=folder:GetChildren()
+        table.sort(children,function(a,b) return a.Name&lt;b.Name end)
+        assert(#children&gt;=1 and #children&lt;=S.MAX_GENERATORS,"A path needs 1–8 generators")
+        for _,ref in ipairs(children) do
+            assert(ref:IsA("ObjectValue"),"Invalid saved generator")
+            local o=readOptions(function(k) return ref:GetAttribute(k) end)
+            entries[#entries+1]={o=o,source=ref.Value,enabled=ref:GetAttribute("enabled")~=false,styles=decodeStyles(ref:GetAttribute("materialStyles"))}
+        end
+    else
+        -- Format 1: one generator stored directly on PathData.
+        local o=readOptions(function(k) return meta:GetAttribute(k) end)
+        local ref=meta:FindFirstChild("Asset")
+        local source=ref and ref:IsA("ObjectValue") and ref.Value or nil
+        entries[1]={o=o,source=source,enabled=true,styles=decodeStyles(meta:GetAttribute("materialStyles"))}
+    end
+    return {points=points,smooth=meta:GetAttribute("smooth")==true,entries=entries,layers=Layers.read(meta)}
+end
+return S
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX16"><Properties><string name="Name">Ui</string><ProtectedString name="Source">-- Widget building helpers: tabbed sections, labels, buttons, button rows, inputs.
+local U={}
+U.C={bg=Color3.fromRGB(24,28,34),panel=Color3.fromRGB(38,44,52),text=Color3.fromRGB(232,237,242),muted=Color3.fromRGB(157,170,185),accent=Color3.fromRGB(36,126,146),error=Color3.fromRGB(255,147,139)}
+function U.make(class,parent,props)
+    local o=Instance.new(class)
+    for k,v in pairs(props or {}) do o[k]=v end
+    o.Parent=parent
+    return o
+end
+-- T translates text; isBusy blocks button callbacks while a build runs.
+function U.new(widget,T,isBusy)
+    local C=U.C
+    local make=U.make
+    local ui={fields={},order=0,section=nil,active=nil,items={},tabs={}}
+    ui.scroll=make("ScrollingFrame",widget,{Size=UDim2.fromScale(1,1),BackgroundColor3=C.bg,BorderSizePixel=0,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(),ScrollBarThickness=5})
+    make("UIPadding",ui.scroll,{PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)})
+    make("UIListLayout",ui.scroll,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
+    function ui.select(name)
+        ui.active=name
+        for section,items in pairs(ui.items) do
+            for _,obj in ipairs(items) do obj.Visible=section==name end
+        end
+        for section,b in pairs(ui.tabs) do b.BackgroundColor3=section==name and C.accent or C.panel end
+    end
+    function ui.item(class,props)
+        ui.order+=1
+        props.LayoutOrder=ui.order
+        local obj=make(class,ui.scroll,props)
+        if ui.section then
+            ui.items[ui.section]=ui.items[ui.section] or {}
+            table.insert(ui.items[ui.section],obj); obj.Visible=ui.section==ui.active
+        end
+        return obj
+    end
+    function ui.label(text,h,color)
+        return ui.item("TextLabel",{Size=UDim2.new(1,0,0,h or 22),BackgroundTransparency=1,Text=T(text),TextColor3=color or C.text,Font=Enum.Font.Gotham,TextSize=13,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
+    end
+    local function styleButton(b)
+        make("UICorner",b,{CornerRadius=UDim.new(0,5)})
+        return b
+    end
+    function ui.button(text,fn,accent)
+        local b=styleButton(ui.item("TextButton",{Size=UDim2.new(1,0,0,32),BackgroundColor3=accent and C.accent or C.panel,BorderSizePixel=0,Text=T(text),TextColor3=C.text,Font=Enum.Font.GothamMedium,TextSize=13,TextWrapped=true,AutoButtonColor=true}))
+        b.Activated:Connect(function() if not isBusy() then fn() end end)
+        return b
+    end
+    -- Several equal-width buttons on one line: {{text, fn}, ...}. Returns the buttons.
+    function ui.row(list,height)
+        local frame=ui.item("Frame",{Size=UDim2.new(1,0,0,height or 30),BackgroundTransparency=1})
+        local out={}
+        for i,entry in ipairs(list) do
+            local b=styleButton(make("TextButton",frame,{Position=UDim2.new((i-1)/#list,2,0,0),Size=UDim2.new(1/#list,-4,1,0),Text=T(entry[1]),TextSize=12,TextWrapped=true,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0}))
+            b.Activated:Connect(function() if not isBusy() then entry[2]() end end)
+            out[i]=b
+        end
+        return out
+    end
+    function ui.input(key,title,value)
+        local row=ui.item("Frame",{Size=UDim2.new(1,0,0,30),BackgroundTransparency=1})
+        make("TextLabel",row,{Size=UDim2.fromScale(0.59,1),BackgroundTransparency=1,Text=T(title),TextColor3=C.muted,Font=Enum.Font.Gotham,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
+        local box=make("TextBox",row,{Position=UDim2.fromScale(0.6,0),Size=UDim2.fromScale(0.4,1),BackgroundColor3=C.panel,BorderSizePixel=0,Text=tostring(value),TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=13,ClearTextOnFocus=false})
+        make("UICorner",box,{CornerRadius=UDim.new(0,4)})
+        ui.fields[key]=box
+        return box
+    end
+    -- Tab bar; each tab shows only the items created after ui.section=name.
+    function ui.tabBar(names,onSelect)
+        local bar=ui.item("Frame",{Size=UDim2.new(1,0,0,32),BackgroundTransparency=1})
+        for i,name in ipairs(names) do
+            local b=styleButton(make("TextButton",bar,{Position=UDim2.new((i-1)/#names,2,0,0),Size=UDim2.new(1/#names,-4,1,0),Text=T(name),TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0}))
+            ui.tabs[name]=b
+            b.Activated:Connect(function() ui.select(name); ui.scroll.CanvasPosition=Vector2.zero; if onSelect then onSelect(name) end end)
+        end
+        ui.active=names[1]
+        return bar
+    end
+    return ui
+end
+return U
 </ProtectedString></Properties></Item></Item></roblox>

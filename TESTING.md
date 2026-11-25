@@ -25,3 +25,13 @@
 - Enable auto preview, drag a node, change a field, switch preset, close/reopen while mesh generation yields. Verify stale previews never appear and no upload occurs.
 - Arm one upload with auto preview enabled: auto must stop, authorization must not be consumed by background preview; Generate must require a fresh authorization for every mesh upload.
 - Inspect circle and arch normals and seams; compare cap winding, smooth sides and rectangular corners.
+
+## v0.6 생성기 스택 확인 (Studio, 약 10분)
+- [ ] 플러그인을 새 Baseplate에 설치하고 **Run geometry self-tests** → "17 geometry tests passed" 확인
+- [ ] 점 3개 찍고 **Preview now** → 레일이 실제 모양으로 보이는지(가이드 선만 보이면 실패)
+- [ ] **Add generator** → **Wall** 선택 → 높이 6 → **Generate** → 모델 하나 안에 `G01_Rail`, `G02_Wall` 폴더가 생기는지
+- [ ] 생성기 2를 **Generator enabled: OFF** 로 끄고 다시 Generate → 벽이 사라지는지
+- [ ] 모델 선택 → **Load selected saved path** → 생성기 1/2, 설정값이 그대로 돌아오는지
+- [ ] v0.5로 만든 모델이 있으면 불러와서 생성기 1개로 열리는지
+- [ ] Extrude 생성기를 추가하고 업로드 허용 없이 Generate → 오류만 나고 기존 결과가 그대로인지
+- [ ] Ctrl+Z 한 번에 Generate 전체가 되돌아가는지
