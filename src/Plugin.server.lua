@@ -15,6 +15,7 @@ local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
 local Library=require(script.Parent.Library)
 local Network=require(script.Parent.Network)
+local Scatter=require(script.Parent.Scatter)
 local TerrainPlan=require(script.Parent.Terrain)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
@@ -156,9 +157,19 @@ local function stopMode()
     dragging=false; mode=nil; syncHandles()
     if plugin:IsActivated() then plugin:Deactivate() end
 end
+local MODE_HELP={
+    add="Click surfaces to add points. Switch to Move to drag nodes.",
+    insert="Click a surface to insert a node after the selected node.",
+    move="Drag a blue node. Use coordinate fields for exact XYZ.",
+    brush="Click or drag in the viewport to paint scatter assets.",
+    erase="Click or drag in the viewport to erase scatter assets.",
+}
 local function startMode(m)
-    editAllowed(); mode=m; plugin:Activate(true); syncHandles(); say(m=="add" and "Click surfaces to add points. Switch to Move to drag nodes." or (m=="insert" and "Click a surface to insert a node after the selected node." or "Drag a blue node. Use coordinate fields for exact XYZ."))
+    editAllowed(); mode=m; plugin:Activate(true); syncHandles(); say(MODE_HELP[m])
 end
+-- Scatter output and brush strokes (filled in by the Layers tab).
+local scatterBox=nil
+local brush={active=false,begin=function() end,paint=function() end,finish=function() end}
 
 -- Generator fields <-> current stack entry.
 local NUMBER_KEYS={"width","height","spacing","step","offset","yaw","roll","sides","uvLength","uvWidth","angle","tolerance"}
@@ -274,6 +285,7 @@ input("drapeSpacing","Drape resample spacing (0 = keep points)",0)
 local function groundAt(x,z)
     local rp=RaycastParams.new(); rp.FilterType=Enum.RaycastFilterType.Exclude
     local exclude={}; if preview then exclude[#exclude+1]=preview end; if root and root.Parent then exclude[#exclude+1]=root end
+    if scatterBox and scatterBox.Parent then exclude[#exclude+1]=scatterBox end
     rp.FilterDescendantsInstances=exclude
     local hit=workspace:Raycast(Vector3.new(x,10000,z),Vector3.new(0,-20000,0),rp)
     return hit and hit.Position.Y or nil
@@ -334,6 +346,7 @@ local function hitPosition(planeY)
     local ray=mouse.UnitRay
     local rp=RaycastParams.new(); rp.FilterType=Enum.RaycastFilterType.Exclude
     local exclude={}; if preview then exclude[#exclude+1]=preview end; if root and root.Parent then exclude[#exclude+1]=root end
+    if scatterBox and scatterBox.Parent then exclude[#exclude+1]=scatterBox end
     rp.FilterDescendantsInstances=exclude; rp.IgnoreWater=false
     local result=workspace:Raycast(ray.Origin,ray.Direction*2048,rp)
     local p=result and result.Position or nil
@@ -358,6 +371,7 @@ mouse.Button1Down:Connect(guarded(function()
     if target and preview and target.Parent==preview and target:GetAttribute("NodeIndex") then
         selected=target:GetAttribute("NodeIndex"); dragging=mode=="move"; refreshLabel(); refreshPreview(); return
     end
+    if mode=="brush" or mode=="erase" then brush.begin(); return end
     if mode=="add" or mode=="insert" then
         assert(#points<MAX_POINTS,"Maximum 128 points")
         local p=hitPosition(number("plane",-100000,100000))
@@ -367,9 +381,15 @@ mouse.Button1Down:Connect(guarded(function()
         end
     end
 end))
-mouse.Move:Connect(guarded(function() if dragging and os.clock()-lastMove>0.05 then lastMove=os.clock(); movePoint() end end))
-mouse.Button1Up:Connect(guarded(function() if dragging then dragging=false; movePoint() end end))
-plugin.Deactivation:Connect(function() mode=nil; dragging=false; axisStart=nil; syncHandles() end)
+mouse.Move:Connect(guarded(function()
+    if dragging and os.clock()-lastMove>0.05 then lastMove=os.clock(); movePoint() end
+    if brush.active and os.clock()-lastMove>0.08 then lastMove=os.clock(); brush.paint() end
+end))
+mouse.Button1Up:Connect(guarded(function()
+    if dragging then dragging=false; movePoint() end
+    if brush.active then brush.finish() end
+end))
+plugin.Deactivation:Connect(function() mode=nil; dragging=false; axisStart=nil; if brush.active then brush.finish() end; syncHandles() end)
 do
     local ok,err=pcall(function()
         axisHandles=Instance.new("Handles")
@@ -568,6 +588,125 @@ button("Remove selected layer",guarded(function()
     if repeatLayers[layerIndex] then table.remove(repeatLayers,layerIndex); layerIndex=math.min(layerIndex,#repeatLayers); syncLayers(); clearMeshPreview() end
 end))
 label("Each layer repeats its own source model along the same spline. Apply layer settings before preview or generation.",58,C.muted)
+label("03B  SCATTER / BRUSH",22,C.muted)
+local scatterPool={}
+local poolLabel=label("Scatter assets: none",24)
+input("scatterBand","Scatter band each side (studs)",20)
+input("scatterGap","Keep clear of path center (studs)",8)
+input("scatterDensity","Density (per 100 square studs)",1)
+input("scatterMin","Minimum distance between assets",4)
+input("scatterScaleMin","Random scale min",0.8)
+input("scatterScaleMax","Random scale max",1.2)
+input("scatterSeed","Random seed",1)
+input("brushRadius","Brush radius (studs)",12)
+local function scatterOptions()
+    local o={band=number("scatterBand",0.1,500),gap=number("scatterGap",0,500),density=number("scatterDensity",0.001,100),
+        minDistance=number("scatterMin",0,100),scaleMin=number("scatterScaleMin",0.05,20),scaleMax=number("scatterScaleMax",0.05,20),
+        seed=number("scatterSeed",0,1e9)}
+    Scatter.validate(o)
+    return o
+end
+-- One "PathForge Scatter" model per place collects everything scattered or painted.
+local function scatterContainer(create)
+    if scatterBox and scatterBox.Parent==workspace then return scatterBox end
+    for _,c in ipairs(workspace:GetChildren()) do
+        if c:IsA("Model") and c:GetAttribute("PathForgeScatter")==1 then scatterBox=c; return c end
+    end
+    if not create then return nil end
+    scatterBox=Instance.new("Model"); scatterBox.Name="PathForge Scatter"; scatterBox:SetAttribute("PathForgeScatter",1)
+    scatterBox.Parent=workspace
+    return scatterBox
+end
+local function scatterPositions(box)
+    local out={}
+    for _,c in ipairs(box and box:GetChildren() or {}) do out[#out+1]=c:GetPivot().Position end
+    return out
+end
+local function place(box,items,seed)
+    assert(#scatterPool>0,"Pick scatter assets first")
+    local rng=Scatter.rng(seed)
+    for _,it in ipairs(items) do
+        local p=it.position
+        local y=groundAt(p.X,p.Z)
+        if y then p=Vector3.new(p.X,y,p.Z) end
+        local c=Assets.clone(scatterPool[Scatter.pick(rng,#scatterPool)])
+        if c:IsA("Model") then c:ScaleTo(it.scale) else c.Size*=it.scale end
+        c:PivotTo(CFrame.new(p)*CFrame.Angles(0,math.rad(it.yaw),0))
+        Assets.configure(c,true,false)
+        c.Parent=box
+    end
+end
+button("Use selected models as scatter assets",guarded(function()
+    editAllowed()
+    local pool={}
+    for _,a in ipairs(Selection:Get()) do
+        Assets.count(a)
+        assert(not preview or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
+        pool[#pool+1]=a
+    end
+    assert(#pool>0,"Select one or more models")
+    scatterPool=pool
+    local names={}
+    for _,a in ipairs(pool) do names[#names+1]=a.Name end
+    poolLabel.Text=T("Scatter assets: "..table.concat(names,", "))
+end))
+button("Scatter along path",guarded(function()
+    editAllowed(); assert(#scatterPool>0,"Pick scatter assets first")
+    local o=scatterOptions()
+    local path=pathFor()
+    local rec=History:TryBeginRecording("PathForgeScatter","PathForge: Scatter along path")
+    assert(rec,"Cannot start Studio undo recording. Try again.")
+    local created
+    local ok,err=pcall(function()
+        created=not scatterContainer(false)
+        local box=scatterContainer(true)
+        local items=Scatter.along(path,o,scatterPositions(box))
+        place(box,items,o.seed)
+        say(string.format("Scattered %d assets. Undo removes them in one step.",#items))
+    end)
+    if not ok and created and scatterBox then scatterBox:Destroy(); scatterBox=nil end
+    History:FinishRecording(rec,ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not ok then error(err,0) end
+end),true)
+row({
+    {"Brush: paint",guarded(function() assert(#scatterPool>0,"Pick scatter assets first"); scatterOptions(); startMode("brush") end)},
+    {"Brush: erase",guarded(function() startMode("erase") end)},
+})
+local strokeRecording,strokeCount,strokeSeed=nil,0,0
+brush.begin=function()
+    strokeRecording=History:TryBeginRecording("PathForgeBrush",mode=="erase" and "PathForge: Erase scatter" or "PathForge: Paint scatter")
+    assert(strokeRecording,"Cannot start Studio undo recording. Try again.")
+    brush.active=true; strokeCount=0; strokeSeed+=1
+    local ok,err=pcall(brush.paint)
+    if not ok then
+        brush.active=false
+        History:FinishRecording(strokeRecording,Enum.FinishRecordingOperation.Cancel); strokeRecording=nil
+        error(err,0)
+    end
+end
+brush.paint=function()
+    local center=hitPosition(number("plane",-100000,100000))
+    if not center then return end
+    local radius=number("brushRadius",0.5,200)
+    if mode=="erase" then
+        local box=scatterContainer(false)
+        if not box then return end
+        local children=box:GetChildren()
+        for _,i in ipairs(Scatter.erase(scatterPositions(box),center,radius)) do children[i]:Destroy(); strokeCount+=1 end
+    else
+        local o=scatterOptions()
+        local box=scatterContainer(true)
+        local items=Scatter.brush(center,radius,o,scatterPositions(box),o.seed+strokeSeed*7919+strokeCount)
+        place(box,items,o.seed+strokeSeed)
+        strokeCount+=#items
+    end
+end
+brush.finish=function()
+    brush.active=false
+    if strokeRecording then History:FinishRecording(strokeRecording,Enum.FinishRecordingOperation.Commit); strokeRecording=nil end
+    say(string.format(mode=="erase" and "Erased %d assets." or "Painted %d assets.",strokeCount))
+end
+label("Scattered and painted assets go into the PathForge Scatter model. Each scatter or brush stroke is one undo step.",44,C.muted)
 
 -- 05 Library ----------------------------------------------------------------
 ui.section="Library"

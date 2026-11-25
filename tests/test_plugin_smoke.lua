@@ -164,6 +164,34 @@ t.check("terrain: drape onto a hill and fill/carve along the path",function()
     assert(mats.Air and mats.Ground and mats.Air==mats.Ground,"fills")
     env.ground=nil
 end)
+local function scatterBox()
+    for _,c in ipairs(env.workspace:GetChildren()) do if c:GetAttribute("PathForgeScatter")==1 then return c end end
+end
+t.check("scatter: along the path, then brush paint and erase",function()
+    local tree=Instance.new("Model"); tree.Name="Tree"; Instance.new("Part",tree); tree.Parent=env.workspace
+    local rock=Instance.new("Part"); rock.Name="Rock"; rock.Parent=env.workspace
+    env.selection={tree,rock}
+    env.click("Use selected models as scatter assets")
+    env.find("Scatter assets: Tree, Rock","TextLabel")
+    newRoad(V(500,0,0),V(600,0,0))
+    env.click("Scatter along path")
+    local s=env.status(); assert(s:find("^Scattered 24 assets"),s)
+    local box=assert(scatterBox(),"no scatter model")
+    assert(#box:GetChildren()==24)
+    local before=env.recordings
+    env.click("Brush: paint")
+    env.rayHit=V(700,0,50); env.mouse.Button1Down:Fire()
+    env.rayHit=V(720,0,50); env.mouse.Move:Fire()
+    env.mouse.Button1Up:Fire()
+    s=env.status(); assert(s:find("^Painted"),s)
+    local painted=#box:GetChildren()-24
+    assert(painted>0 and env.recordings==before+1,"one undo step per stroke")
+    env.click("Brush: erase")
+    env.rayHit=V(700,0,50); env.mouse.Button1Down:Fire(); env.mouse.Button1Up:Fire()
+    s=env.status(); assert(s:find("^Erased"),s)
+    assert(#box:GetChildren()<24+painted,"nothing erased")
+    env.click("Stop viewport editing")
+end)
 t.check("play testing clears draft and preview",function()
     env.running=true; env.heartbeat:Fire()
     assert(not env.workspace:FindFirstChild("_PathForgeDraft"))

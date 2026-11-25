@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10 — 2026-11-25
+### Added
+- Scatter (Layers tab): pick one or more selected models as scatter assets, then **Scatter along path** places them randomly in a band on both sides of the path, keeping a clear zone over the path center, a minimum distance between assets, and a random scale range and rotation. A seed makes the layout repeatable. Assets are dropped onto the ground below.
+- Brush: **Brush: paint** and **Brush: erase** viewport modes paint or remove scatter assets in a circle while dragging. Each stroke is one undo step.
+- All scattered/painted assets go into one `PathForge Scatter` model; existing assets are respected by the minimum distance.
+- `Scatter` module and `tests/test_v10.lua`; smoke test scatters, paints and erases.
+
 ## v0.9b — 2026-11-25
 ### Added
 - Terrain section in the Path tab:

@@ -16,6 +16,7 @@ local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
 local Library=require(script.Parent.Library)
 local Network=require(script.Parent.Network)
+local Scatter=require(script.Parent.Scatter)
 local TerrainPlan=require(script.Parent.Terrain)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
@@ -157,9 +158,19 @@ local function stopMode()
     dragging=false; mode=nil; syncHandles()
     if plugin:IsActivated() then plugin:Deactivate() end
 end
+local MODE_HELP={
+    add="Click surfaces to add points. Switch to Move to drag nodes.",
+    insert="Click a surface to insert a node after the selected node.",
+    move="Drag a blue node. Use coordinate fields for exact XYZ.",
+    brush="Click or drag in the viewport to paint scatter assets.",
+    erase="Click or drag in the viewport to erase scatter assets.",
+}
 local function startMode(m)
-    editAllowed(); mode=m; plugin:Activate(true); syncHandles(); say(m=="add" and "Click surfaces to add points. Switch to Move to drag nodes." or (m=="insert" and "Click a surface to insert a node after the selected node." or "Drag a blue node. Use coordinate fields for exact XYZ."))
+    editAllowed(); mode=m; plugin:Activate(true); syncHandles(); say(MODE_HELP[m])
 end
+-- Scatter output and brush strokes (filled in by the Layers tab).
+local scatterBox=nil
+local brush={active=false,begin=function() end,paint=function() end,finish=function() end}
 
 -- Generator fields &lt;-&gt; current stack entry.
 local NUMBER_KEYS={"width","height","spacing","step","offset","yaw","roll","sides","uvLength","uvWidth","angle","tolerance"}
@@ -275,6 +286,7 @@ input("drapeSpacing","Drape resample spacing (0 = keep points)",0)
 local function groundAt(x,z)
     local rp=RaycastParams.new(); rp.FilterType=Enum.RaycastFilterType.Exclude
     local exclude={}; if preview then exclude[#exclude+1]=preview end; if root and root.Parent then exclude[#exclude+1]=root end
+    if scatterBox and scatterBox.Parent then exclude[#exclude+1]=scatterBox end
     rp.FilterDescendantsInstances=exclude
     local hit=workspace:Raycast(Vector3.new(x,10000,z),Vector3.new(0,-20000,0),rp)
     return hit and hit.Position.Y or nil
@@ -335,6 +347,7 @@ local function hitPosition(planeY)
     local ray=mouse.UnitRay
     local rp=RaycastParams.new(); rp.FilterType=Enum.RaycastFilterType.Exclude
     local exclude={}; if preview then exclude[#exclude+1]=preview end; if root and root.Parent then exclude[#exclude+1]=root end
+    if scatterBox and scatterBox.Parent then exclude[#exclude+1]=scatterBox end
     rp.FilterDescendantsInstances=exclude; rp.IgnoreWater=false
     local result=workspace:Raycast(ray.Origin,ray.Direction*2048,rp)
     local p=result and result.Position or nil
@@ -359,6 +372,7 @@ mouse.Button1Down:Connect(guarded(function()
     if target and preview and target.Parent==preview and target:GetAttribute("NodeIndex") then
         selected=target:GetAttribute("NodeIndex"); dragging=mode=="move"; refreshLabel(); refreshPreview(); return
     end
+    if mode=="brush" or mode=="erase" then brush.begin(); return end
     if mode=="add" or mode=="insert" then
         assert(#points&lt;MAX_POINTS,"Maximum 128 points")
         local p=hitPosition(number("plane",-100000,100000))
@@ -368,9 +382,15 @@ mouse.Button1Down:Connect(guarded(function()
         end
     end
 end))
-mouse.Move:Connect(guarded(function() if dragging and os.clock()-lastMove&gt;0.05 then lastMove=os.clock(); movePoint() end end))
-mouse.Button1Up:Connect(guarded(function() if dragging then dragging=false; movePoint() end end))
-plugin.Deactivation:Connect(function() mode=nil; dragging=false; axisStart=nil; syncHandles() end)
+mouse.Move:Connect(guarded(function()
+    if dragging and os.clock()-lastMove&gt;0.05 then lastMove=os.clock(); movePoint() end
+    if brush.active and os.clock()-lastMove&gt;0.08 then lastMove=os.clock(); brush.paint() end
+end))
+mouse.Button1Up:Connect(guarded(function()
+    if dragging then dragging=false; movePoint() end
+    if brush.active then brush.finish() end
+end))
+plugin.Deactivation:Connect(function() mode=nil; dragging=false; axisStart=nil; if brush.active then brush.finish() end; syncHandles() end)
 do
     local ok,err=pcall(function()
         axisHandles=Instance.new("Handles")
@@ -569,6 +589,125 @@ button("Remove selected layer",guarded(function()
     if repeatLayers[layerIndex] then table.remove(repeatLayers,layerIndex); layerIndex=math.min(layerIndex,#repeatLayers); syncLayers(); clearMeshPreview() end
 end))
 label("Each layer repeats its own source model along the same spline. Apply layer settings before preview or generation.",58,C.muted)
+label("03B  SCATTER / BRUSH",22,C.muted)
+local scatterPool={}
+local poolLabel=label("Scatter assets: none",24)
+input("scatterBand","Scatter band each side (studs)",20)
+input("scatterGap","Keep clear of path center (studs)",8)
+input("scatterDensity","Density (per 100 square studs)",1)
+input("scatterMin","Minimum distance between assets",4)
+input("scatterScaleMin","Random scale min",0.8)
+input("scatterScaleMax","Random scale max",1.2)
+input("scatterSeed","Random seed",1)
+input("brushRadius","Brush radius (studs)",12)
+local function scatterOptions()
+    local o={band=number("scatterBand",0.1,500),gap=number("scatterGap",0,500),density=number("scatterDensity",0.001,100),
+        minDistance=number("scatterMin",0,100),scaleMin=number("scatterScaleMin",0.05,20),scaleMax=number("scatterScaleMax",0.05,20),
+        seed=number("scatterSeed",0,1e9)}
+    Scatter.validate(o)
+    return o
+end
+-- One "PathForge Scatter" model per place collects everything scattered or painted.
+local function scatterContainer(create)
+    if scatterBox and scatterBox.Parent==workspace then return scatterBox end
+    for _,c in ipairs(workspace:GetChildren()) do
+        if c:IsA("Model") and c:GetAttribute("PathForgeScatter")==1 then scatterBox=c; return c end
+    end
+    if not create then return nil end
+    scatterBox=Instance.new("Model"); scatterBox.Name="PathForge Scatter"; scatterBox:SetAttribute("PathForgeScatter",1)
+    scatterBox.Parent=workspace
+    return scatterBox
+end
+local function scatterPositions(box)
+    local out={}
+    for _,c in ipairs(box and box:GetChildren() or {}) do out[#out+1]=c:GetPivot().Position end
+    return out
+end
+local function place(box,items,seed)
+    assert(#scatterPool&gt;0,"Pick scatter assets first")
+    local rng=Scatter.rng(seed)
+    for _,it in ipairs(items) do
+        local p=it.position
+        local y=groundAt(p.X,p.Z)
+        if y then p=Vector3.new(p.X,y,p.Z) end
+        local c=Assets.clone(scatterPool[Scatter.pick(rng,#scatterPool)])
+        if c:IsA("Model") then c:ScaleTo(it.scale) else c.Size*=it.scale end
+        c:PivotTo(CFrame.new(p)*CFrame.Angles(0,math.rad(it.yaw),0))
+        Assets.configure(c,true,false)
+        c.Parent=box
+    end
+end
+button("Use selected models as scatter assets",guarded(function()
+    editAllowed()
+    local pool={}
+    for _,a in ipairs(Selection:Get()) do
+        Assets.count(a)
+        assert(not preview or (a~=preview and not a:IsDescendantOf(preview)),"Do not use preview objects")
+        pool[#pool+1]=a
+    end
+    assert(#pool&gt;0,"Select one or more models")
+    scatterPool=pool
+    local names={}
+    for _,a in ipairs(pool) do names[#names+1]=a.Name end
+    poolLabel.Text=T("Scatter assets: "..table.concat(names,", "))
+end))
+button("Scatter along path",guarded(function()
+    editAllowed(); assert(#scatterPool&gt;0,"Pick scatter assets first")
+    local o=scatterOptions()
+    local path=pathFor()
+    local rec=History:TryBeginRecording("PathForgeScatter","PathForge: Scatter along path")
+    assert(rec,"Cannot start Studio undo recording. Try again.")
+    local created
+    local ok,err=pcall(function()
+        created=not scatterContainer(false)
+        local box=scatterContainer(true)
+        local items=Scatter.along(path,o,scatterPositions(box))
+        place(box,items,o.seed)
+        say(string.format("Scattered %d assets. Undo removes them in one step.",#items))
+    end)
+    if not ok and created and scatterBox then scatterBox:Destroy(); scatterBox=nil end
+    History:FinishRecording(rec,ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not ok then error(err,0) end
+end),true)
+row({
+    {"Brush: paint",guarded(function() assert(#scatterPool&gt;0,"Pick scatter assets first"); scatterOptions(); startMode("brush") end)},
+    {"Brush: erase",guarded(function() startMode("erase") end)},
+})
+local strokeRecording,strokeCount,strokeSeed=nil,0,0
+brush.begin=function()
+    strokeRecording=History:TryBeginRecording("PathForgeBrush",mode=="erase" and "PathForge: Erase scatter" or "PathForge: Paint scatter")
+    assert(strokeRecording,"Cannot start Studio undo recording. Try again.")
+    brush.active=true; strokeCount=0; strokeSeed+=1
+    local ok,err=pcall(brush.paint)
+    if not ok then
+        brush.active=false
+        History:FinishRecording(strokeRecording,Enum.FinishRecordingOperation.Cancel); strokeRecording=nil
+        error(err,0)
+    end
+end
+brush.paint=function()
+    local center=hitPosition(number("plane",-100000,100000))
+    if not center then return end
+    local radius=number("brushRadius",0.5,200)
+    if mode=="erase" then
+        local box=scatterContainer(false)
+        if not box then return end
+        local children=box:GetChildren()
+        for _,i in ipairs(Scatter.erase(scatterPositions(box),center,radius)) do children[i]:Destroy(); strokeCount+=1 end
+    else
+        local o=scatterOptions()
+        local box=scatterContainer(true)
+        local items=Scatter.brush(center,radius,o,scatterPositions(box),o.seed+strokeSeed*7919+strokeCount)
+        place(box,items,o.seed+strokeSeed)
+        strokeCount+=#items
+    end
+end
+brush.finish=function()
+    brush.active=false
+    if strokeRecording then History:FinishRecording(strokeRecording,Enum.FinishRecordingOperation.Commit); strokeRecording=nil end
+    say(string.format(mode=="erase" and "Erased %d assets." or "Painted %d assets.",strokeCount))
+end
+label("Scattered and painted assets go into the PathForge Scatter model. Each scatter or brush stroke is one undo step.",44,C.muted)
 
 -- 05 Library ----------------------------------------------------------------
 ui.section="Library"
@@ -1752,10 +1891,40 @@ local ko={
     ["Invalid terrain settings"]="지형 설정이 잘못됐어요",
     ["Resample spacing must be positive"]="다시 찍는 간격은 0보다 커야 해요",
     ["Too many points: increase resample spacing"]="점이 너무 많아요. 다시 찍는 간격을 늘리세요",
+
+    -- v0.10 scatter / brush
+    ["03B  SCATTER / BRUSH"]="03B  흩뿌리기 / 브러시",
+    ["Scatter assets: none"]="흩뿌릴 에셋: 없음",
+    ["Scatter band each side (studs)"]="양옆 흩뿌릴 폭 (스터드)",
+    ["Keep clear of path center (studs)"]="경로 중심에서 비울 거리 (스터드)",
+    ["Density (per 100 square studs)"]="밀도 (100제곱스터드당)",
+    ["Minimum distance between assets"]="에셋 사이 최소 거리",
+    ["Random scale min"]="랜덤 크기 최소", ["Random scale max"]="랜덤 크기 최대",
+    ["Random seed"]="랜덤 시드",
+    ["Brush radius (studs)"]="브러시 반경 (스터드)",
+    ["Use selected models as scatter assets"]="선택한 모델들을 흩뿌릴 에셋으로 사용",
+    ["Scatter along path"]="경로를 따라 흩뿌리기",
+    ["Brush: paint"]="브러시: 칠하기", ["Brush: erase"]="브러시: 지우기",
+    ["Click or drag in the viewport to paint scatter assets."]="뷰포트를 클릭하거나 끌어서 에셋을 칠하세요.",
+    ["Click or drag in the viewport to erase scatter assets."]="뷰포트를 클릭하거나 끌어서 에셋을 지우세요.",
+    ["Scattered and painted assets go into the PathForge Scatter model. Each scatter or brush stroke is one undo step."]="흩뿌리거나 칠한 에셋은 PathForge Scatter 모델에 들어가요. 흩뿌리기나 브러시 한 번이 실행 취소 한 단계예요.",
+    ["Pick scatter assets first"]="먼저 흩뿌릴 에셋을 고르세요",
+    ["Select one or more models"]="모델을 하나 이상 선택하세요",
+    ["Scatter band must be 0–500 studs"]="흩뿌릴 폭은 0~500스터드여야 해요",
+    ["Clear zone must be smaller than the band"]="비울 거리는 흩뿌릴 폭보다 작아야 해요",
+    ["Density must be 0–100 per 100 square studs"]="밀도는 100제곱스터드당 0~100이어야 해요",
+    ["Minimum distance must be 0–100"]="최소 거리는 0~100이어야 해요",
+    ["Scale range must be 0–20 with min ≤ max"]="크기 범위는 0~20이고 최소가 최대보다 작거나 같아야 해요",
+    ["Too many scatter instances: lower the density or band"]="흩뿌릴 개수가 너무 많아요. 밀도나 폭을 줄이세요",
+    ["Brush radius must be 0–200 studs"]="브러시 반경은 0~200스터드여야 해요",
 }
 
 -- Formatted messages: Lua pattern -&gt; function returning the Korean text.
 local patterns={
+    {"^Scatter assets: (.+)$",function(n) return "흩뿌릴 에셋: "..n end},
+    {"^Scattered (%d+) assets%. Undo removes them in one step%.$",function(n) return "에셋 "..n.."개를 흩뿌렸어요. 실행 취소 한 번으로 지울 수 있어요." end},
+    {"^Painted (%d+) assets%.$",function(n) return "에셋 "..n.."개를 칠했어요." end},
+    {"^Erased (%d+) assets%.$",function(n) return "에셋 "..n.."개를 지웠어요." end},
     {"^Fill material: (.+)$",function(m) return "채울 재질: "..m end},
     {"^Draped (%d+) of (%d+) points onto the ground%.$",function(a,b) return "점 "..b.."개 중 "..a.."개를 지면에 붙였어요." end},
     {"^Terrain: (%d+) fill and (%d+) carve blocks%. Undo reverts it in one step%.$",function(a,b) return "지형: 채우기 "..a.."개, 깎기 "..b.."개. 실행 취소 한 번으로 되돌릴 수 있어요." end},
@@ -1805,7 +1974,7 @@ end
 return Locale
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">Version</string><ProtectedString name="Source">-- Single source of the plugin version shown in the UI and written to saves.
-return {FULL="0.9.1",SHORT="0.9b"}
+return {FULL="0.10.0",SHORT="0.10"}
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX11"><Properties><string name="Name">Json</string><ProtectedString name="Source">-- Small deterministic JSON codec (sorted object keys). Used for saved settings,
 -- recipes and cache keys so the same input always produces the same text.
@@ -2885,4 +3054,117 @@ function T.plan(path,o)
     return {fill=fill,carve=carve}
 end
 return T
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX21"><Properties><string name="Name">Scatter</string><ProtectedString name="Source">-- Scatter: random but repeatable placement of assets in a band along a path,
+-- and brush painting/erasing in a circle. Pure planning; the plugin places clones.
+local G=require(script.Parent.Geometry)
+local S={MAX_COUNT=2000}
+
+-- Deterministic generator (same seed -&gt; same layout in Studio and tests).
+function S.rng(seed)
+    local state=math.floor(math.abs(seed or 1))%2147483646+1
+    return function()
+        state=(state*48271)%2147483647
+        return (state-1)/2147483646
+    end
+end
+
+-- Spatial hash on XZ for minimum-distance checks.
+local function grid(cell)
+    local g={cell=math.max(cell,0.01),cells={}}
+    local function key(x,z) return math.floor(x/g.cell)..","..math.floor(z/g.cell) end
+    function g.add(p) local k=key(p.X,p.Z); g.cells[k]=g.cells[k] or {}; table.insert(g.cells[k],p) end
+    function g.near(p,r)
+        local cx,cz=math.floor(p.X/g.cell),math.floor(p.Z/g.cell)
+        for dx=-1,1 do for dz=-1,1 do
+            for _,q in ipairs(g.cells[(cx+dx)..","..(cz+dz)] or {}) do
+                local ex,ez=q.X-p.X,q.Z-p.Z
+                if ex*ex+ez*ez&lt;r*r then return true end
+            end
+        end end
+        return false
+    end
+    return g
+end
+S.grid=grid
+
+function S.validate(o)
+    assert(o.band&gt;0 and o.band&lt;=500,"Scatter band must be 0–500 studs")
+    assert(o.gap&gt;=0 and o.gap&lt;o.band,"Clear zone must be smaller than the band")
+    assert(o.density&gt;0 and o.density&lt;=100,"Density must be 0–100 per 100 square studs")
+    assert(o.minDistance&gt;=0 and o.minDistance&lt;=100,"Minimum distance must be 0–100")
+    assert(o.scaleMin&gt;0 and o.scaleMax&gt;=o.scaleMin and o.scaleMax&lt;=20,"Scale range must be 0–20 with min ≤ max")
+end
+
+local function variation(rng,o)
+    return o.scaleMin+(o.scaleMax-o.scaleMin)*rng(),rng()*360
+end
+
+-- Scatter along a path in a band on both sides, keeping `gap` studs clear of the center line.
+-- existing: positions already placed (kept apart by minDistance).
+-- Returns a list of {position, scale, yaw}.
+function S.along(path,o,existing)
+    S.validate(o)
+    local rng=S.rng(o.seed)
+    local area=path.length*2*(o.band-o.gap)
+    local target=math.floor(area*o.density/100+0.5)
+    assert(target&lt;=S.MAX_COUNT,"Too many scatter instances: lower the density or band")
+    local g=grid(math.max(o.minDistance,1))
+    for _,p in ipairs(existing or {}) do g.add(p) end
+    local out={}
+    local tries=0
+    while #out&lt;target and tries&lt;target*20 do
+        tries+=1
+        local d=rng()*path.length
+        local side=rng()&lt;0.5 and -1 or 1
+        local off=o.gap+(o.band-o.gap)*rng()
+        local p,_,r=G.frame(path,d)
+        local q=p+r*(off*side)
+        if o.minDistance&lt;=0 or not g.near(q,o.minDistance) then
+            g.add(q)
+            local scale,yaw=variation(rng,o)
+            out[#out+1]={position=q,scale=scale,yaw=yaw}
+        end
+    end
+    return out
+end
+
+-- Brush: about density-per-100-square-studs instances inside a circle.
+function S.brush(center,radius,o,existing,seed)
+    assert(radius&gt;0 and radius&lt;=200,"Brush radius must be 0–200 studs")
+    local rng=S.rng(seed)
+    local target=math.max(1,math.floor(math.pi*radius*radius*o.density/100+0.5))
+    assert(target&lt;=S.MAX_COUNT,"Too many scatter instances: lower the density or band")
+    local g=grid(math.max(o.minDistance,1))
+    for _,p in ipairs(existing or {}) do g.add(p) end
+    local out={}
+    local tries=0
+    while #out&lt;target and tries&lt;target*20 do
+        tries+=1
+        -- Uniform point in a disc.
+        local a=rng()*2*math.pi
+        local r=radius*math.sqrt(rng())
+        local q=center+Vector3.new(math.cos(a)*r,0,math.sin(a)*r)
+        if o.minDistance&lt;=0 or not g.near(q,o.minDistance) then
+            g.add(q)
+            local scale,yaw=variation(rng,o)
+            out[#out+1]={position=q,scale=scale,yaw=yaw}
+        end
+    end
+    return out
+end
+
+-- Indexes of positions within radius of center (XZ), for the eraser.
+function S.erase(positions,center,radius)
+    local out={}
+    for i,p in ipairs(positions) do
+        local dx,dz=p.X-center.X,p.Z-center.Z
+        if dx*dx+dz*dz&lt;=radius*radius then out[#out+1]=i end
+    end
+    return out
+end
+
+-- Picks one of n assets.
+function S.pick(rng,n) return math.min(n,math.floor(rng()*n)+1) end
+return S
 </ProtectedString></Properties></Item></Item></roblox>

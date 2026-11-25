@@ -1,4 +1,4 @@
-# PathForge / ROBLOX-splines v0.9ba
+# PathForge / ROBLOX-splines v0.10ba
 
 Studio-only procedural environment toolkit. No runtime scripts or automatic asset uploads.
 

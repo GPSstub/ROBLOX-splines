@@ -154,6 +154,7 @@ function methods:Clone()
     for _,child in ipairs(self:GetChildren()) do local cc=child:Clone(); if cc then cc.Parent=c end end
     return c
 end
+function methods:ScaleTo(k) rawget(self,"_attrs")._scale=k end
 function methods:GetPivot()
     local p=rawget(self,"_props")
     if p.CFrame then return p.CFrame end
