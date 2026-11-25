@@ -8,5 +8,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install lupa
+      - run: pip install lupa==2.8
       - run: python tests/run.py
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/selene
+          key: selene-0.30.0-${{ runner.os }}
+      - run: command -v selene || cargo install selene --version 0.30.0 --locked --no-default-features
+      - run: selene src

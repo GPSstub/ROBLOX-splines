@@ -220,6 +220,9 @@ function Locale.t(text)
     if Locale.language~="ko" or type(text)~="string" then return text end
     local v=ko[text]
     if v then return v end
+    -- error() adds "Script:line: " in front; translate the message after it.
+    local where,rest=text:match("^(.-:%d+: )(.+)$")
+    if where then return where..Locale.t(rest) end
     for _,p in ipairs(patterns) do
         local captures={text:match(p[1])}
         if #captures>0 then return p[2](table.unpack(captures)) end

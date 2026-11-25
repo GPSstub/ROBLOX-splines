@@ -45,6 +45,8 @@ SAMPLES = [
     "Mesh upload failed: 403",
     "Editor closed or play test started; uploaded asset ID: 123",
     "Mesh creation failed (asset 123): timeout",
+    "PathForge.Geometry:44: Path is too short",
+    "Preview: PathForge.Extrude:31: Profile area is zero",
 ]
 # Strings whose leading word is a Roblox/internal name and need no translation.
 ALLOWED_SAME = {"PATHFORGE   /   0.5"}
