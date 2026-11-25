@@ -1041,7 +1041,7 @@ for _,a in ipairs(actions) do
     local ok,action=pcall(function() return plugin:CreatePluginAction(a[1],T(a[2]),T(a[2]),"",true) end)
     if ok and action then action.Triggered:Connect(function() if not busy then a[3]() end end) end
 end
-plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
+plugin.Unloading:Connect(function() unloading=true; if brush.active then brush.finish() end; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
 for _,field in pairs(fields) do
     if not field:GetAttribute("NoPreviewReset") then field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
 end

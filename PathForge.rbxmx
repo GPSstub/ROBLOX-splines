@@ -1042,7 +1042,7 @@ for _,a in ipairs(actions) do
     local ok,action=pcall(function() return plugin:CreatePluginAction(a[1],T(a[2]),T(a[2]),"",true) end)
     if ok and action then action.Triggered:Connect(function() if not busy then a[3]() end end) end
 end
-plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
+plugin.Unloading:Connect(function() unloading=true; if brush.active then brush.finish() end; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
 for _,field in pairs(fields) do
     if not field:GetAttribute("NoPreviewReset") then field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end
 end
@@ -2038,7 +2038,7 @@ end
 return Locale
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">Version</string><ProtectedString name="Source">-- Single source of the plugin version shown in the UI and written to saves.
-return {FULL="0.11.0",SHORT="0.11"}
+return {FULL="1.0.0",SHORT="1.0"}
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX11"><Properties><string name="Name">Json</string><ProtectedString name="Source">-- Small deterministic JSON codec (sorted object keys). Used for saved settings,
 -- recipes and cache keys so the same input always produces the same text.

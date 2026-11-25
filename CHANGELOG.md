@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0 — 2026-11-25
+### Added
+- Stability tests (`tests/test_v10_stability.lua`): about 300 randomized paths with fixed seeds through geometry, every generator, Extrude planning, crossings and scatter (no NaN, only clear user-facing errors), a 128-point worst case, and loading v0.1, v0.2 and v0.5 saves, including out-of-range old values.
+- Release workflow: pushing a `v*` tag runs the tests and publishes `PathForge.rbxmx` as a GitHub release with `RELEASE_NOTES.md`.
+- README rewritten for v1.0 (install, quick start in Korean and English, features, uploads, limits, development).
+
+### Fixed
+- Closing the plugin during a brush stroke now finishes the stroke's undo recording.
+
 ## v0.11 — 2026-11-25
 ### Added
 - Draft undo/redo for point edits (add, insert, drag, axis move, XYZ, delete, drape, snap, new path, load), separate from Studio's undo, 50 steps.

@@ -13,6 +13,6 @@ checklist in TESTING.md. Studio checks happen every version, not only at v1.0.
 | v0.9b | Terrain draping, fill and carve | done |
 | v0.10 | Scatter and brush placement | done |
 | v0.11 | UI/UX polish | done |
-| v1.0 | Stabilization, real-use validation, release | planned |
+| v1.0 | Stabilization, real-use validation, release | code done; Studio validation and tag pending |
 
 No release dates are committed. Studio testing is a release blocker.
