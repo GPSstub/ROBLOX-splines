@@ -15,6 +15,7 @@ local Ui=require(script.Parent.Ui)
 local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
 local Library=require(script.Parent.Library)
+local Network=require(script.Parent.Network)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -40,6 +41,7 @@ local uploadArmed=false
 local points={}
 local selected=0
 local smooth=true
+local junctionsOn=true
 local root,loadedPivot,loadedMeta,loadedOutput=nil,nil,nil,nil
 local function newEntry(preset) return {o=P.options(preset),source=nil,styles={},enabled=true} end
 local entries={newEntry("Rail")}
@@ -73,7 +75,7 @@ local function number(key,lo,hi)
     return v
 end
 local function canContinue() return not unloading and widget.Enabled and not RunService:IsRunning() end
-local pathCache=Cache.new(8)
+local pathCache=Cache.new(64)
 local specCache=Cache.new(32)
 -- Paths are cached by their points; identical drafts reuse samples and frames.
 local function pathFor()
@@ -81,6 +83,40 @@ local function pathFor()
     return pathCache:memo(key,function()
         local path=G.path(points,smooth); path.linear=not smooth; path.key=key; return path
     end)
+end
+-- Other saved PathForge paths in the Workspace (not the one being edited).
+local function otherPaths()
+    local out={}
+    for _,m in ipairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m~=root and m:GetAttribute("PathForgeSchema")==1 and m:FindFirstChild("PathData") then
+            local ok,state=pcall(Persist.read,m:FindFirstChild("PathData"),m:GetPivot())
+            if ok then
+                local key=Cache.pointsKey(state.points,state.smooth)
+                local okPath,path=pcall(function()
+                    return pathCache:memo(key,function()
+                        local p=G.path(state.points,state.smooth); p.linear=not state.smooth; p.key=key; return p
+                    end)
+                end)
+                if okPath then
+                    local width
+                    for _,e in ipairs(state.entries) do if e.enabled and e.o.preset=="Road" then width=width or e.o.width end end
+                    out[#out+1]={model=m,path=path,width=width}
+                end
+            end
+        end
+    end
+    return out
+end
+local function roadWidth(list)
+    for _,e in ipairs(list) do if e.enabled~=false and e.o.preset=="Road" then return e.o.width end end
+end
+-- Road crossings with other saved road paths, when junctions are enabled.
+local function junctionsFor(path,list)
+    local width=roadWidth(list)
+    if not junctionsOn or not width then return {} end
+    local roads={}
+    for _,other in ipairs(otherPaths()) do if other.width then roads[#roads+1]=other end end
+    return Network.junctions(path,width,roads)
 end
 local function hasMeshEntry()
     for _,e in ipairs(entries) do if e.enabled and P.MESH[e.o.preset] then return true end end
@@ -93,7 +129,7 @@ local syncHandles=function() end
 local syncButtons=function() end
 local syncMaterials=function() end
 local syncLayers=function() end
-local liveButton,uploadButton
+local liveButton,uploadButton,junctionButton
 
 local function setLive(enabled)
     liveEnabled=enabled
@@ -208,7 +244,7 @@ local function resetDraft()
     root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil
     entries={newEntry("Rail")}; current=1; loadFields()
     repeatLayers={}; layerIndex=0; syncLayers(); resetUpload()
-    points={}; selected=0; materialSlot=1
+    points={}; selected=0; materialSlot=1; junctionsOn=true
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
 end
 button("New path / clear draft",guarded(function() editAllowed(); stopMode(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
@@ -231,6 +267,16 @@ end
 button("Apply selected XYZ",guarded(function() editAllowed(); assert(points[selected],"Select a node first"); points[selected]=Vector3.new(number("x",-100000,100000),number("y",-100000,100000),number("z",-100000,100000)); refreshPreview(); refreshLabel() end))
 button("Delete selected node",guarded(function() editAllowed(); if points[selected] then table.remove(points,selected); selected=math.min(selected,#points); refreshLabel(); refreshPreview() end end))
 local smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
+label("01A  BRANCHES",22,C.muted)
+input("snapRadius","Branch snap radius (studs)",4)
+button("Snap path ends onto nearby paths",guarded(function()
+    editAllowed(); assert(#points&gt;=2,"Add at least two points")
+    local paths={}
+    for _,other in ipairs(otherPaths()) do paths[#paths+1]=other.path end
+    local snapped,n=Network.snapEnds(points,paths,number("snapRadius",0.1,100))
+    points=snapped; refreshLabel(); refreshPreview()
+    say(n&gt;0 and string.format("Snapped %d path end(s). Generate to build the branch.",n) or "No other path within the snap radius.",n==0)
+end))
 
 local function hitPosition(planeY)
     local ray=mouse.UnitRay
@@ -420,6 +466,7 @@ syncButtons=function()
     fidelityButton.Text=T("Mesh collision: "..e.o.fidelity)
     assetLabel.Text=T(e.source and ("Asset: "..e.source.Name) or "Asset: none (Custom / Deform)")
     if not hasMeshEntry() then resetUpload() end
+    if junctionButton then junctionButton.Text=T(junctionsOn and "Road junctions: ON" or "Road junctions: OFF") end
 end
 
 -- 03 Layers ------------------------------------------------------------------
@@ -617,12 +664,12 @@ local function commit(allowUpload)
         end
         local layerCount
         overlays,layerCount=Layers.build(path,savedLayers,Assets.count,Assets.clone,MAX_PARTS,false)
-        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache})
+        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache,junctions=junctionsFor(path,savedEntries)})
         output.Name="Generated"
         overlays.Parent=output; count+=layerCount
         checkTarget()
         meta=Instance.new("Folder"); meta.Name="PathData"
-        Persist.write(meta,{points=points,smooth=smooth,entries=savedEntries,layers=savedLayers},pivot)
+        Persist.write(meta,{points=points,smooth=smooth,entries=savedEntries,layers=savedLayers,junctions=junctionsOn},pivot)
         recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
         assert(recording,"Cannot start Studio undo recording. Try again.")
         if #pending&gt;0 then
@@ -674,7 +721,7 @@ local function loadSelected()
     local state=Persist.read(meta,s:GetPivot())
     repeatLayers=state.layers; layerIndex=#repeatLayers&gt;0 and 1 or 0; syncLayers()
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated")
-    points=state.points; selected=1; smooth=state.smooth
+    points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
     entries=state.entries; current=1; materialSlot=1; loadFields()
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
     say("Loaded saved path. Generate updates only this model's output.")
@@ -699,7 +746,7 @@ local function previewNow(manual)
         for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
         local layerCount,partCount
         overlays,layerCount=Layers.build(path,list,Assets.count,Assets.clone,1000,true)
-        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache})
+        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache,junctions=junctionsFor(path,entries)})
         if not active() then return end
         folder.Name="Preview"; folder.Archivable=false
         overlays.Archivable=false; overlays.Parent=folder
@@ -719,6 +766,7 @@ liveButton=row({
     {"Auto preview: OFF",guarded(function() editAllowed(); setLive(not liveEnabled); if not liveEnabled then clearMeshPreview() end end)},
     {"Clear preview",function() setLive(false); clearMeshPreview() end},
 })[1]
+junctionButton=button("Road junctions: ON",function() junctionsOn=not junctionsOn; clearMeshPreview(); syncButtons() end)
 uploadButton=button("Authorize mesh uploads for next Generate: OFF",guarded(function()
     editAllowed(); assert(hasMeshEntry(),"Only mesh generators need an asset upload")
     setLive(false)
@@ -1629,10 +1677,19 @@ local ko={
     ["Marble (white)"]="대리석 (흰색)", ["Granite"]="화강암", ["Glass (clear)"]="유리 (투명)",
     ["Grass"]="잔디", ["Sand"]="모래", ["Neon (blue)"]="네온 (파랑)",
     ["Painted line (white)"]="도색 선 (흰색)", ["Painted line (yellow)"]="도색 선 (노랑)",
+
+    -- v0.9 branches / junctions
+    ["01A  BRANCHES"]="01A  분기",
+    ["Branch snap radius (studs)"]="분기 스냅 반경 (스터드)",
+    ["Snap path ends onto nearby paths"]="경로 끝을 근처 경로에 붙이기",
+    ["No other path within the snap radius."]="스냅 반경 안에 다른 경로가 없어요.",
+    ["Road junctions: ON"]="도로 교차로: 켬", ["Road junctions: OFF"]="도로 교차로: 끔",
+    ["Snap radius must be positive"]="스냅 반경은 0보다 커야 해요",
 }
 
 -- Formatted messages: Lua pattern -&gt; function returning the Korean text.
 local patterns={
+    {"^Snapped (%d+) path end%(s%)%. Generate to build the branch%.$",function(n) return "경로 끝 "..n.."개를 붙였어요. 생성하면 분기가 만들어져요." end},
     {"^Part budget exceeded %((%d+)%)$",function(n) return "파트 한도("..n.."개)를 넘었어요" end},
     {"^Generator (%d+) / (%d+)  |  (.+)$",function(i,n,s) return "생성기 "..i.." / "..n.."  |  "..Locale.t(s) end},
     {"^Preview ready: (%d+) parts, (%d+) layer parts%. Nothing was uploaded%.$",function(a,b) return "미리보기 준비 완료: 파트 "..a.."개, 레이어 파트 "..b.."개. 업로드는 하지 않았어요." end},
@@ -1678,7 +1735,7 @@ end
 return Locale
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">Version</string><ProtectedString name="Source">-- Single source of the plugin version shown in the UI and written to saves.
-return {FULL="0.8.0",SHORT="0.8"}
+return {FULL="0.9.0",SHORT="0.9a"}
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX11"><Properties><string name="Name">Json</string><ProtectedString name="Source">-- Small deterministic JSON codec (sorted object keys). Used for saved settings,
 -- recipes and cache keys so the same input always produces the same text.
@@ -1885,6 +1942,16 @@ function P.parts(path,o,limit,shown)
     end
     if o.preset=="Wall" or o.preset=="Fence" or o.preset=="Road" then assert(o.height&gt;0,"Height must be positive for this preset") end
     local ds=G.segments(path,o.step,2000)
+    -- Junction cuts (Road only): segment boundaries land exactly on cut edges.
+    local cuts=o.preset=="Road" and o.cuts or {}
+    local function inCut(d) for _,c in ipairs(cuts) do if d&gt;c[1]+1e-6 and d&lt;c[2]-1e-6 then return true end end return false end
+    if #cuts&gt;0 then
+        for _,c in ipairs(cuts) do ds[#ds+1]=c[1]; ds[#ds+1]=c[2] end
+        table.sort(ds)
+        local unique={ds[1]}
+        for i=2,#ds do if ds[i]-unique[#unique]&gt;1e-5 then unique[#unique+1]=ds[i] end end
+        ds=unique
+    end
     local lastDir
     for i=1,#ds-1 do
         local a,_,ra,ua=frame(ds[i]); local b,_,rb,ub=frame(ds[i+1])
@@ -1896,7 +1963,8 @@ function P.parts(path,o,limit,shown)
                 beam("RailFoot",aa,bb,up,0.30,0.10,"Metal",STEEL,0.06)
                 beam("RailHead",aa+ua*0.11,bb+ub*0.11,up,0.13,0.17,"Metal",STEEL,0.06)
             end
-        elseif o.preset=="Road" then
+        elseif o.preset=="Road" and not inCut((ds[i]+ds[i+1])/2) then
+            -- Segments inside a junction cut are left to the junction pad.
             beam("RoadSurface",a-ua*o.height/2,b-ub*o.height/2,up,o.width,o.height,"Asphalt",ASPHALT,0.12)
             for _,side in ipairs({-1,1}) do
                 beam("EdgeLine",a+ra*(o.width/2-0.3)*side+ua*0.025,b+rb*(o.width/2-0.3)*side+ub*0.025,up,0.10,0.035,"SmoothPlastic",LINE,0.06)
@@ -1926,7 +1994,7 @@ function P.parts(path,o,limit,shown)
                 add("FencePost",cf*CFrame.new(0,o.height/2,0),Vector3.new(o.width*1.7,o.height,o.width*1.7),"Wood",TIMBER)
             else
                 local len=math.min(2,o.spacing*0.45,path.length)
-                if d-len/2&gt;=0 and d+len/2&lt;=path.length then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
+                if d-len/2&gt;=0 and d+len/2&lt;=path.length and not inCut(d-len/2) and not inCut(d+len/2) then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
             end
         end
     end
@@ -2021,6 +2089,7 @@ local Materials=require(script.Parent.Materials)
 local Extrude=require(script.Parent.Extrude)
 local Deform=require(script.Parent.Deform)
 local Json=require(script.Parent.Json)
+local Network=require(script.Parent.Network)
 local B={MAX_PARTS=6500}
 
 function B.part(parent,spec,collide,preview,style)
@@ -2090,6 +2159,7 @@ end
 -- Returns the output folder, part count and a list of preview EditableMeshes.
 function B.stack(path,entries,ctx)
     local budget=ctx.budget or B.MAX_PARTS
+    entries=table.clone(entries) -- junction cuts replace entries; never the caller's list
     local output=Instance.new("Folder"); output.Name="Generators"
     local meshes={}
     local count=0
@@ -2112,6 +2182,26 @@ function B.stack(path,entries,ctx)
         local need={}
         for _,i in ipairs(order) do
             if P.MESH[entries[i].o.preset] then need[i]=B.meshParts(path,entries[i].o); meshCount+=need[i] end
+        end
+        -- Junctions: roads leave a gap that one pad per crossing fills.
+        local junctions=ctx.junctions or {}
+        local padRoad
+        if #junctions&gt;0 then
+            for _,i in ipairs(order) do
+                local e=entries[i]
+                if e.o.preset=="Road" then
+                    local o=table.clone(e.o); o.cuts=Network.cuts(junctions,path.length)
+                    entries[i]={o=o,styles=e.styles,source=e.source,enabled=e.enabled}
+                    padRoad=padRoad or entries[i]
+                end
+            end
+        end
+        if padRoad then
+            local folder=Instance.new("Folder"); folder.Name="Junctions"; folder.Parent=output
+            for _,spec in ipairs(Network.padSpecs(junctions,padRoad.o.height,padRoad.o.offset)) do
+                B.part(folder,spec,padRoad.o.collide,ctx.preview,padRoad.styles.RoadSurface)
+                count+=1
+            end
         end
         for _,i in ipairs(order) do
             local entry=entries[i]
@@ -2171,6 +2261,7 @@ S.readOptions=readOptions
 function S.write(meta,state,pivot)
     meta:SetAttribute("Format",S.FORMAT)
     meta:SetAttribute("smooth",state.smooth)
+    meta:SetAttribute("junctions",state.junctions==true)
     meta:SetAttribute("PointCount",#state.points)
     meta:SetAttribute("CoordinateSpace","Local")
     for i,pos in ipairs(state.points) do
@@ -2216,7 +2307,8 @@ function S.read(meta,pivot)
         local source=ref and ref:IsA("ObjectValue") and ref.Value or nil
         entries[1]={o=o,source=source,enabled=true,styles=decodeStyles(meta:GetAttribute("materialStyles"))}
     end
-    return {points=points,smooth=meta:GetAttribute("smooth")==true,entries=entries,layers=Layers.read(meta)}
+    return {points=points,smooth=meta:GetAttribute("smooth")==true,entries=entries,layers=Layers.read(meta),
+        junctions=meta:GetAttribute("junctions")==true}
 end
 return S
 </ProtectedString></Properties></Item>

@@ -261,10 +261,19 @@ local ko={
     ["Marble (white)"]="대리석 (흰색)", ["Granite"]="화강암", ["Glass (clear)"]="유리 (투명)",
     ["Grass"]="잔디", ["Sand"]="모래", ["Neon (blue)"]="네온 (파랑)",
     ["Painted line (white)"]="도색 선 (흰색)", ["Painted line (yellow)"]="도색 선 (노랑)",
+
+    -- v0.9 branches / junctions
+    ["01A  BRANCHES"]="01A  분기",
+    ["Branch snap radius (studs)"]="분기 스냅 반경 (스터드)",
+    ["Snap path ends onto nearby paths"]="경로 끝을 근처 경로에 붙이기",
+    ["No other path within the snap radius."]="스냅 반경 안에 다른 경로가 없어요.",
+    ["Road junctions: ON"]="도로 교차로: 켬", ["Road junctions: OFF"]="도로 교차로: 끔",
+    ["Snap radius must be positive"]="스냅 반경은 0보다 커야 해요",
 }
 
 -- Formatted messages: Lua pattern -> function returning the Korean text.
 local patterns={
+    {"^Snapped (%d+) path end%(s%)%. Generate to build the branch%.$",function(n) return "경로 끝 "..n.."개를 붙였어요. 생성하면 분기가 만들어져요." end},
     {"^Part budget exceeded %((%d+)%)$",function(n) return "파트 한도("..n.."개)를 넘었어요" end},
     {"^Generator (%d+) / (%d+)  |  (.+)$",function(i,n,s) return "생성기 "..i.." / "..n.."  |  "..Locale.t(s) end},
     {"^Preview ready: (%d+) parts, (%d+) layer parts%. Nothing was uploaded%.$",function(a,b) return "미리보기 준비 완료: 파트 "..a.."개, 레이어 파트 "..b.."개. 업로드는 하지 않았어요." end},

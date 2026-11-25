@@ -35,6 +35,7 @@ S.readOptions=readOptions
 function S.write(meta,state,pivot)
     meta:SetAttribute("Format",S.FORMAT)
     meta:SetAttribute("smooth",state.smooth)
+    meta:SetAttribute("junctions",state.junctions==true)
     meta:SetAttribute("PointCount",#state.points)
     meta:SetAttribute("CoordinateSpace","Local")
     for i,pos in ipairs(state.points) do
@@ -80,6 +81,7 @@ function S.read(meta,pivot)
         local source=ref and ref:IsA("ObjectValue") and ref.Value or nil
         entries[1]={o=o,source=source,enabled=true,styles=decodeStyles(meta:GetAttribute("materialStyles"))}
     end
-    return {points=points,smooth=meta:GetAttribute("smooth")==true,entries=entries,layers=Layers.read(meta)}
+    return {points=points,smooth=meta:GetAttribute("smooth")==true,entries=entries,layers=Layers.read(meta),
+        junctions=meta:GetAttribute("junctions")==true}
 end
 return S

@@ -49,6 +49,7 @@ SAMPLES = [
     "PathForge.Geometry:44: Path is too short",
     "Preview: PathForge.Extrude:31: Profile area is zero",
     "Part budget exceeded (3000)",
+    "Snapped 2 path end(s). Generate to build the branch.",
     "Generator 2 / 3  |  Wall",
     "Preview ready: 120 parts, 30 layer parts. Nothing was uploaded.",
 ]

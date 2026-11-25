@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9a — 2026-11-25
+### Added
+- Branches: **Snap path ends onto nearby paths** moves the first/last point of the draft onto the nearest saved PathForge path within a radius, so a side road starts exactly on the main road.
+- Road junctions: when a path with a Road generator crosses (or ends on) another saved road, the road surface is cut back and one asphalt junction pad fills the crossing. The pad grows for shallow crossing angles (capped at 3× width). Paths more than 2 studs apart vertically (bridges) are ignored. Toggle in the Build tab; saved per path. Older saves keep junctions off so their output does not change.
+- `Network` module (projection, snapping, crossings, pads) and `tests/test_v09a.lua`; smoke test builds two crossing roads and a snapped branch.
+
 ## v0.8 — 2026-11-25
 ### Added
 - Library tab, stored in `ServerStorage > PathForgeLibrary` so it saves and travels with the place:

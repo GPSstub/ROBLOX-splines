@@ -94,6 +94,16 @@ function P.parts(path,o,limit,shown)
     end
     if o.preset=="Wall" or o.preset=="Fence" or o.preset=="Road" then assert(o.height>0,"Height must be positive for this preset") end
     local ds=G.segments(path,o.step,2000)
+    -- Junction cuts (Road only): segment boundaries land exactly on cut edges.
+    local cuts=o.preset=="Road" and o.cuts or {}
+    local function inCut(d) for _,c in ipairs(cuts) do if d>c[1]+1e-6 and d<c[2]-1e-6 then return true end end return false end
+    if #cuts>0 then
+        for _,c in ipairs(cuts) do ds[#ds+1]=c[1]; ds[#ds+1]=c[2] end
+        table.sort(ds)
+        local unique={ds[1]}
+        for i=2,#ds do if ds[i]-unique[#unique]>1e-5 then unique[#unique+1]=ds[i] end end
+        ds=unique
+    end
     local lastDir
     for i=1,#ds-1 do
         local a,_,ra,ua=frame(ds[i]); local b,_,rb,ub=frame(ds[i+1])
@@ -105,7 +115,8 @@ function P.parts(path,o,limit,shown)
                 beam("RailFoot",aa,bb,up,0.30,0.10,"Metal",STEEL,0.06)
                 beam("RailHead",aa+ua*0.11,bb+ub*0.11,up,0.13,0.17,"Metal",STEEL,0.06)
             end
-        elseif o.preset=="Road" then
+        elseif o.preset=="Road" and not inCut((ds[i]+ds[i+1])/2) then
+            -- Segments inside a junction cut are left to the junction pad.
             beam("RoadSurface",a-ua*o.height/2,b-ub*o.height/2,up,o.width,o.height,"Asphalt",ASPHALT,0.12)
             for _,side in ipairs({-1,1}) do
                 beam("EdgeLine",a+ra*(o.width/2-0.3)*side+ua*0.025,b+rb*(o.width/2-0.3)*side+ub*0.025,up,0.10,0.035,"SmoothPlastic",LINE,0.06)
@@ -135,7 +146,7 @@ function P.parts(path,o,limit,shown)
                 add("FencePost",cf*CFrame.new(0,o.height/2,0),Vector3.new(o.width*1.7,o.height,o.width*1.7),"Wood",TIMBER)
             else
                 local len=math.min(2,o.spacing*0.45,path.length)
-                if d-len/2>=0 and d+len/2<=path.length then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
+                if d-len/2>=0 and d+len/2<=path.length and not inCut(d-len/2) and not inCut(d+len/2) then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
             end
         end
     end

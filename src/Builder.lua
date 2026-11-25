@@ -7,6 +7,7 @@ local Materials=require(script.Parent.Materials)
 local Extrude=require(script.Parent.Extrude)
 local Deform=require(script.Parent.Deform)
 local Json=require(script.Parent.Json)
+local Network=require(script.Parent.Network)
 local B={MAX_PARTS=6500}
 
 function B.part(parent,spec,collide,preview,style)
@@ -76,6 +77,7 @@ end
 -- Returns the output folder, part count and a list of preview EditableMeshes.
 function B.stack(path,entries,ctx)
     local budget=ctx.budget or B.MAX_PARTS
+    entries=table.clone(entries) -- junction cuts replace entries; never the caller's list
     local output=Instance.new("Folder"); output.Name="Generators"
     local meshes={}
     local count=0
@@ -98,6 +100,26 @@ function B.stack(path,entries,ctx)
         local need={}
         for _,i in ipairs(order) do
             if P.MESH[entries[i].o.preset] then need[i]=B.meshParts(path,entries[i].o); meshCount+=need[i] end
+        end
+        -- Junctions: roads leave a gap that one pad per crossing fills.
+        local junctions=ctx.junctions or {}
+        local padRoad
+        if #junctions>0 then
+            for _,i in ipairs(order) do
+                local e=entries[i]
+                if e.o.preset=="Road" then
+                    local o=table.clone(e.o); o.cuts=Network.cuts(junctions,path.length)
+                    entries[i]={o=o,styles=e.styles,source=e.source,enabled=e.enabled}
+                    padRoad=padRoad or entries[i]
+                end
+            end
+        end
+        if padRoad then
+            local folder=Instance.new("Folder"); folder.Name="Junctions"; folder.Parent=output
+            for _,spec in ipairs(Network.padSpecs(junctions,padRoad.o.height,padRoad.o.offset)) do
+                B.part(folder,spec,padRoad.o.collide,ctx.preview,padRoad.styles.RoadSurface)
+                count+=1
+            end
         end
         for _,i in ipairs(order) do
             local entry=entries[i]

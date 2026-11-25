@@ -14,6 +14,7 @@ local Ui=require(script.Parent.Ui)
 local Version=require(script.Parent.Version)
 local Cache=require(script.Parent.Cache)
 local Library=require(script.Parent.Library)
+local Network=require(script.Parent.Network)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -39,6 +40,7 @@ local uploadArmed=false
 local points={}
 local selected=0
 local smooth=true
+local junctionsOn=true
 local root,loadedPivot,loadedMeta,loadedOutput=nil,nil,nil,nil
 local function newEntry(preset) return {o=P.options(preset),source=nil,styles={},enabled=true} end
 local entries={newEntry("Rail")}
@@ -72,7 +74,7 @@ local function number(key,lo,hi)
     return v
 end
 local function canContinue() return not unloading and widget.Enabled and not RunService:IsRunning() end
-local pathCache=Cache.new(8)
+local pathCache=Cache.new(64)
 local specCache=Cache.new(32)
 -- Paths are cached by their points; identical drafts reuse samples and frames.
 local function pathFor()
@@ -80,6 +82,40 @@ local function pathFor()
     return pathCache:memo(key,function()
         local path=G.path(points,smooth); path.linear=not smooth; path.key=key; return path
     end)
+end
+-- Other saved PathForge paths in the Workspace (not the one being edited).
+local function otherPaths()
+    local out={}
+    for _,m in ipairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m~=root and m:GetAttribute("PathForgeSchema")==1 and m:FindFirstChild("PathData") then
+            local ok,state=pcall(Persist.read,m:FindFirstChild("PathData"),m:GetPivot())
+            if ok then
+                local key=Cache.pointsKey(state.points,state.smooth)
+                local okPath,path=pcall(function()
+                    return pathCache:memo(key,function()
+                        local p=G.path(state.points,state.smooth); p.linear=not state.smooth; p.key=key; return p
+                    end)
+                end)
+                if okPath then
+                    local width
+                    for _,e in ipairs(state.entries) do if e.enabled and e.o.preset=="Road" then width=width or e.o.width end end
+                    out[#out+1]={model=m,path=path,width=width}
+                end
+            end
+        end
+    end
+    return out
+end
+local function roadWidth(list)
+    for _,e in ipairs(list) do if e.enabled~=false and e.o.preset=="Road" then return e.o.width end end
+end
+-- Road crossings with other saved road paths, when junctions are enabled.
+local function junctionsFor(path,list)
+    local width=roadWidth(list)
+    if not junctionsOn or not width then return {} end
+    local roads={}
+    for _,other in ipairs(otherPaths()) do if other.width then roads[#roads+1]=other end end
+    return Network.junctions(path,width,roads)
 end
 local function hasMeshEntry()
     for _,e in ipairs(entries) do if e.enabled and P.MESH[e.o.preset] then return true end end
@@ -92,7 +128,7 @@ local syncHandles=function() end
 local syncButtons=function() end
 local syncMaterials=function() end
 local syncLayers=function() end
-local liveButton,uploadButton
+local liveButton,uploadButton,junctionButton
 
 local function setLive(enabled)
     liveEnabled=enabled
@@ -207,7 +243,7 @@ local function resetDraft()
     root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil
     entries={newEntry("Rail")}; current=1; loadFields()
     repeatLayers={}; layerIndex=0; syncLayers(); resetUpload()
-    points={}; selected=0; materialSlot=1
+    points={}; selected=0; materialSlot=1; junctionsOn=true
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
 end
 button("New path / clear draft",guarded(function() editAllowed(); stopMode(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
@@ -230,6 +266,16 @@ end
 button("Apply selected XYZ",guarded(function() editAllowed(); assert(points[selected],"Select a node first"); points[selected]=Vector3.new(number("x",-100000,100000),number("y",-100000,100000),number("z",-100000,100000)); refreshPreview(); refreshLabel() end))
 button("Delete selected node",guarded(function() editAllowed(); if points[selected] then table.remove(points,selected); selected=math.min(selected,#points); refreshLabel(); refreshPreview() end end))
 local smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
+label("01A  BRANCHES",22,C.muted)
+input("snapRadius","Branch snap radius (studs)",4)
+button("Snap path ends onto nearby paths",guarded(function()
+    editAllowed(); assert(#points>=2,"Add at least two points")
+    local paths={}
+    for _,other in ipairs(otherPaths()) do paths[#paths+1]=other.path end
+    local snapped,n=Network.snapEnds(points,paths,number("snapRadius",0.1,100))
+    points=snapped; refreshLabel(); refreshPreview()
+    say(n>0 and string.format("Snapped %d path end(s). Generate to build the branch.",n) or "No other path within the snap radius.",n==0)
+end))
 
 local function hitPosition(planeY)
     local ray=mouse.UnitRay
@@ -419,6 +465,7 @@ syncButtons=function()
     fidelityButton.Text=T("Mesh collision: "..e.o.fidelity)
     assetLabel.Text=T(e.source and ("Asset: "..e.source.Name) or "Asset: none (Custom / Deform)")
     if not hasMeshEntry() then resetUpload() end
+    if junctionButton then junctionButton.Text=T(junctionsOn and "Road junctions: ON" or "Road junctions: OFF") end
 end
 
 -- 03 Layers ------------------------------------------------------------------
@@ -616,12 +663,12 @@ local function commit(allowUpload)
         end
         local layerCount
         overlays,layerCount=Layers.build(path,savedLayers,Assets.count,Assets.clone,MAX_PARTS,false)
-        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache})
+        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache,junctions=junctionsFor(path,savedEntries)})
         output.Name="Generated"
         overlays.Parent=output; count+=layerCount
         checkTarget()
         meta=Instance.new("Folder"); meta.Name="PathData"
-        Persist.write(meta,{points=points,smooth=smooth,entries=savedEntries,layers=savedLayers},pivot)
+        Persist.write(meta,{points=points,smooth=smooth,entries=savedEntries,layers=savedLayers,junctions=junctionsOn},pivot)
         recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
         assert(recording,"Cannot start Studio undo recording. Try again.")
         if #pending>0 then
@@ -673,7 +720,7 @@ local function loadSelected()
     local state=Persist.read(meta,s:GetPivot())
     repeatLayers=state.layers; layerIndex=#repeatLayers>0 and 1 or 0; syncLayers()
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated")
-    points=state.points; selected=1; smooth=state.smooth
+    points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
     entries=state.entries; current=1; materialSlot=1; loadFields()
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
     say("Loaded saved path. Generate updates only this model's output.")
@@ -698,7 +745,7 @@ local function previewNow(manual)
         for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
         local layerCount,partCount
         overlays,layerCount=Layers.build(path,list,Assets.count,Assets.clone,1000,true)
-        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache})
+        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache,junctions=junctionsFor(path,entries)})
         if not active() then return end
         folder.Name="Preview"; folder.Archivable=false
         overlays.Archivable=false; overlays.Parent=folder
@@ -718,6 +765,7 @@ liveButton=row({
     {"Auto preview: OFF",guarded(function() editAllowed(); setLive(not liveEnabled); if not liveEnabled then clearMeshPreview() end end)},
     {"Clear preview",function() setLive(false); clearMeshPreview() end},
 })[1]
+junctionButton=button("Road junctions: ON",function() junctionsOn=not junctionsOn; clearMeshPreview(); syncButtons() end)
 uploadButton=button("Authorize mesh uploads for next Generate: OFF",guarded(function()
     editAllowed(); assert(hasMeshEntry(),"Only mesh generators need an asset upload")
     setLive(false)
