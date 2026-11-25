@@ -17,6 +17,6 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/selene
-          key: selene-0.30.0-${{ runner.os }}
-      - run: command -v selene || cargo install selene --version 0.30.0 --locked --no-default-features
+          key: selene-0.30.0-default-features-${{ runner.os }}
+      - run: command -v selene || cargo install selene --version 0.30.0 --locked
       - run: selene src
