@@ -1,4 +1,4 @@
-# PathForge / ROBLOX-splines v0.6
+# PathForge / ROBLOX-splines v0.7
 
 Studio-only procedural environment toolkit. No runtime scripts or automatic asset uploads.
 
@@ -26,7 +26,7 @@ The editor UI follows Studio's language: Korean (한국어) when Studio is set t
 
 ## Limits
 - Studio runtime and upload/persistence behavior have not been tested. Use an empty test place.
-- Extrude uses one mesh, limited to 60,000 vertices, 20,000 triangles and 2,000 path segments; no chunking yet. Extremely sharp curves may self-intersect; no automatic intersection repair.
+- Extrude splits long sweeps into up to 8 meshes of at most 60,000 vertices and 20,000 triangles each; every chunk is a separate upload. Extremely sharp curves may self-intersect; no automatic intersection repair.
 - Extrude UVs use path distance and profile perimeter; rendering of texture repetition and PBR depends on the source asset. Cap UVs use planar mapping. Deform retains source UVs and still requires dense source topology; subdivision is not implemented for imported meshes.
 - Open arches are visual shells, not thick tunnels. Collision for open shells is disabled. Closed meshes support selectable collision fidelity.
 - MaterialVariant references must exist in the destination place. Built-in Part presets still have segmented curves.

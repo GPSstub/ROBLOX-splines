@@ -44,36 +44,59 @@ function E.profile(o)
     end
     return profile,closed
 end
+E.MAX_CHUNK_VERTICES=60000
+E.MAX_CHUNK_TRIANGLES=20000
+E.MAX_CHUNKS=8
+-- Long sweeps are split into chunks that each fit one EditableMesh. Chunks share
+-- their boundary ring position, and UVs use absolute path distance, so seams line up.
+function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices)
+    local capTris=closed and 2*(n-2) or 0
+    local perRing=edges*2
+    local maxRings=math.min(math.floor((maxTriangles-capTris)/perRing)+1,math.floor(maxVertices/n))
+    assert(maxRings>=2,"Profile too detailed for one mesh; reduce profile sides")
+    local chunks={}
+    local first=1
+    while first<sampleCount do
+        local last=math.min(sampleCount,first+maxRings-1)
+        chunks[#chunks+1]={first=first,last=last}
+        first=last
+    end
+    return chunks
+end
 function E.plan(path,o)
     local profile,closed=E.profile(o)
-    local samples=G.adaptive(path,o.step,math.rad(o.angle),o.tolerance,2000)
+    local samples=G.adaptive(path,o.step,math.rad(o.angle),o.tolerance,E.MAX_CHUNKS*2000)
     local n=#profile
     local edges=closed and n or n-1
+    local chunks=E.chunks(#samples,n,edges,closed,E.MAX_CHUNK_TRIANGLES,E.MAX_CHUNK_VERTICES)
+    assert(#chunks<=E.MAX_CHUNKS,"Mesh budget exceeded; increase step/tolerance or reduce profile sides")
     local triangles=(#samples-1)*edges*2+(closed and 2*(n-2) or 0)
-    assert(#samples*n<=60000 and triangles<=20000,"Mesh budget exceeded; increase step/tolerance or reduce profile sides")
     local perimeter={0}
     for i=1,edges do perimeter[i+1]=perimeter[i]+(profile[i%n+1]-profile[i]).Magnitude end
-    return {profile=profile,closed=closed,samples=samples,edges=edges,triangles=triangles,vertices=#samples*n,perimeter=perimeter}
+    return {profile=profile,closed=closed,samples=samples,edges=edges,triangles=triangles,
+        vertices=#samples*n+(#chunks-1)*n,perimeter=perimeter,chunks=chunks}
 end
-function E.build(path,o,source,preview,canContinue,style)
-    local plan=E.plan(path,o)
+-- Builds one chunk (sample range first..last) into an EditableMesh and MeshPart.
+local function buildChunk(path,o,plan,chunk,source,preview,canContinue,style,index)
     local mesh,part
     local ok,result=pcall(function()
         mesh=A:CreateEditableMesh(); assert(mesh,"EditableMesh memory budget unavailable")
         local rings,uvs,normals={},{},{}
         local round=o.profile=="circle" or o.profile=="arch"
-        local anchor=G.at(path,0)
+        local anchor=G.at(path,plan.samples[chunk.first])
         local roll=math.rad(o.roll)
         local co,si=math.cos(roll),math.sin(roll)
         local n=#plan.profile
-        for i,d in ipairs(plan.samples) do
+        for i=chunk.first,chunk.last do
+            local d=plan.samples[i]
             local pos,_,r,u=G.frame(path,d)
             local right,up=r*co+u*si,u*co-r*si
-            rings[i]={}; uvs[i]={}; normals[i]={}
+            local k=i-chunk.first+1
+            rings[k]={}; uvs[k]={}; normals[k]={}
             for j,q in ipairs(plan.profile) do
-                rings[i][j]=mesh:AddVertex(pos-anchor+right*q.X+up*q.Y+Vector3.new(0,o.offset,0))
+                rings[k][j]=mesh:AddVertex(pos-anchor+right*q.X+up*q.Y+Vector3.new(0,o.offset,0))
             end
-            for j=1,plan.edges+1 do uvs[i][j]=mesh:AddUV(Vector2.new(d/o.uvLength,plan.perimeter[j]/o.uvWidth)) end
+            for j=1,plan.edges+1 do uvs[k][j]=mesh:AddUV(Vector2.new(d/o.uvLength,plan.perimeter[j]/o.uvWidth)) end
             -- Per-edge smoothing along length, with a hard profile corner.
             if round then
                 local rx=o.width/2
@@ -81,13 +104,13 @@ function E.build(path,o,source,preview,canContinue,style)
                 for j,q in ipairs(plan.profile) do
                     local normal=(right*(q.X/(rx*rx))+up*(q.Y/(ry*ry))).Unit
                     if o.profile=="arch" then normal=-normal end -- clockwise open profile winding
-                    normals[i][j]=mesh:AddNormal(normal)
+                    normals[k][j]=mesh:AddNormal(normal)
                 end
             else
                 for j=1,plan.edges do
                     local nextJ=j%n+1
                     local edge=plan.profile[nextJ]-plan.profile[j]
-                    normals[i][j]=mesh:AddNormal((right*edge.Y-up*edge.X).Unit)
+                    normals[k][j]=mesh:AddNormal((right*edge.Y-up*edge.X).Unit)
                 end
             end
         end
@@ -109,20 +132,26 @@ function E.build(path,o,source,preview,canContinue,style)
             end
         end
         if plan.closed then
-            for _,i in ipairs({1,#rings}) do
-                local _,f=G.frame(path,plan.samples[i])
-                local normal=mesh:AddNormal(i==1 and -f or f)
+            -- Caps only at the ends of the whole sweep, never between chunks.
+            local caps={}
+            if chunk.first==1 then caps[#caps+1]={ring=1,sample=chunk.first,start=true} end
+            if chunk.last==#plan.samples then caps[#caps+1]={ring=#rings,sample=chunk.last,start=false} end
+            for _,cap in ipairs(caps) do
+                local _,f=G.frame(path,plan.samples[cap.sample])
+                local normal=mesh:AddNormal(cap.start and -f or f)
                 local capUV={}
                 for j,q in ipairs(plan.profile) do capUV[j]=mesh:AddUV(Vector2.new(q.X/o.uvLength,q.Y/o.uvWidth)) end
                 for j=2,n-1 do
                     local b,c=j,j+1
-                    if i==#rings then b,c=c,b end
-                    tri(rings[i][1],rings[i][b],rings[i][c],capUV[1],capUV[b],capUV[c],normal,normal,normal)
+                    if not cap.start then b,c=c,b end
+                    tri(rings[cap.ring][1],rings[cap.ring][b],rings[cap.ring][c],capUV[1],capUV[b],capUV[c],normal,normal,normal)
                 end
             end
         end
         mesh:RemoveUnused()
-        part=O.create(mesh,anchor,o,"ExtrudedMesh",source,preview,canContinue)
+        local name=#plan.chunks>1 and string.format("ExtrudedMesh_%02d",index) or "ExtrudedMesh"
+        part=O.create(mesh,anchor,o,name,source,preview,canContinue)
+        part.Name=name
         if not source then
             part.Material=Enum.Material.Concrete; part.Color=Color3.fromRGB(150,150,150)
             Materials.apply(part,style)
@@ -133,8 +162,24 @@ function E.build(path,o,source,preview,canContinue,style)
         return part
     end)
     if not ok then if part then part:Destroy() end; if mesh then mesh:Destroy() end; error(result,0) end
-    if preview then return result,mesh end
-    mesh:Destroy()
-    return result
+    return result,mesh
+end
+-- Returns a list of MeshParts (one per chunk) and, for previews, their EditableMeshes.
+function E.build(path,o,source,preview,canContinue,style)
+    local plan=E.plan(path,o)
+    local parts,meshes={},{}
+    local ok,err=pcall(function()
+        for i,chunk in ipairs(plan.chunks) do
+            local part,mesh=buildChunk(path,o,plan,chunk,source,preview,canContinue,style,i)
+            parts[#parts+1]=part
+            if preview then meshes[#meshes+1]=mesh else mesh:Destroy() end
+        end
+    end)
+    if not ok then
+        for _,p in ipairs(parts) do p:Destroy() end
+        for _,m in ipairs(meshes) do m:Destroy() end
+        error(err,0)
+    end
+    return parts,meshes
 end
 return E

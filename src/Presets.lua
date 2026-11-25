@@ -94,6 +94,7 @@ function P.parts(path,o,limit,shown)
     end
     if o.preset=="Wall" or o.preset=="Fence" or o.preset=="Road" then assert(o.height>0,"Height must be positive for this preset") end
     local ds=G.segments(path,o.step,2000)
+    local lastDir
     for i=1,#ds-1 do
         local a,_,ra,ua=frame(ds[i]); local b,_,rb,ub=frame(ds[i+1])
         local up=ua+ub; up=up.Magnitude>1e-4 and up.Unit or ua
@@ -118,7 +119,10 @@ function P.parts(path,o,limit,shown)
             local cf,len=axisCF(aa,bb,up)
             if cf then
                 add("Pipe",cf*CFrame.Angles(0,math.pi/2,0),Vector3.new(len+0.04,o.width,o.width),"Metal",STEEL,"Cylinder")
-                if i>1 then add("Joint",CFrame.new(aa),Vector3.new(o.width,o.width,o.width),"Metal",STEEL,"Ball") end
+                -- A joint ball only where the pipe actually bends.
+                local dir=(bb-aa).Unit
+                if lastDir and lastDir:Dot(dir)<0.9999 then add("Joint",CFrame.new(aa),Vector3.new(o.width,o.width,o.width),"Metal",STEEL,"Ball") end
+                lastDir=dir
             end
         end
     end
@@ -135,6 +139,49 @@ function P.parts(path,o,limit,shown)
             end
         end
     end
-    return specs
+    return P.merge(specs)
+end
+
+-- Joins consecutive collinear beams of the same kind into one longer part.
+-- Straight stretches become a single part; curved geometry is unchanged.
+local function beamKey(s)
+    return string.format("%s|%.4f|%.4f|%s|%d,%d,%d",s.name,s.size.X,s.size.Y,s.material,s.color[1],s.color[2],s.color[3])
+end
+local function ends(s)
+    local look=s.cf.LookVector
+    local half=look*(s.size.Z/2)
+    return s.cf.Position-half,s.cf.Position+half,look
+end
+function P.merge(specs)
+    local out={}
+    local tails={} -- key -> list of indexes in out that may still grow
+    for _,s in ipairs(specs) do
+        local merged=false
+        if not s.shape then
+            local key=beamKey(s)
+            local list=tails[key] or {}
+            tails[key]=list
+            local sa,sb,look=ends(s)
+            for _,idx in ipairs(list) do
+                local t=out[idx]
+                local ta,tb,tlook=ends(t)
+                local gap=sa-tb
+                local offAxis=gap-tlook*gap:Dot(tlook)
+                if tlook:Dot(look)>0.99999 and t.cf.UpVector:Dot(s.cf.UpVector)>0.99999
+                    and offAxis.Magnitude<1e-3 and math.abs(gap:Dot(tlook))<=0.2 then
+                    local len=(sb-ta):Dot(tlook)
+                    local center=ta+tlook*(len/2)
+                    out[idx]={name=t.name,cf=CFrame.lookAt(center,center+tlook,t.cf.UpVector),
+                        size=Vector3.new(t.size.X,t.size.Y,len),material=t.material,color=t.color}
+                    merged=true
+                    break
+                end
+            end
+            if not merged then out[#out+1]=s; list[#list+1]=#out end
+        else
+            out[#out+1]=s
+        end
+    end
+    return out
 end
 return P

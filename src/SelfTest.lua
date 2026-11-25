@@ -34,7 +34,7 @@ function T.run()
         l.enabled=false; local _,empty=L.plan(p,{l},function() error("disabled") end,10); assert(empty==0)
     end)
     test(function() assert(not pcall(L.validate,{spacing=0,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true})) end)
-    test(function() local specs=P.parts(G.path({V(0,0,0),V(0,0,-20)},false),P.options("Rail")); assert(#specs==92) end)
+    test(function() local specs=P.parts(G.path({V(0,0,0),V(0,0,-20)},false),P.options("Rail")); assert(#specs==16) end)
     test(function() local v=J.decode(J.encode({a={1,2},b="x"})); assert(v.a[2]==2 and v.b=="x") end)
     return n
 end

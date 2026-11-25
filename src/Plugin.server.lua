@@ -12,6 +12,7 @@ local Builder=require(script.Parent.Builder)
 local Persist=require(script.Parent.Persist)
 local Ui=require(script.Parent.Ui)
 local Version=require(script.Parent.Version)
+local Cache=require(script.Parent.Cache)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -70,8 +71,14 @@ local function number(key,lo,hi)
     return v
 end
 local function canContinue() return not unloading and widget.Enabled and not RunService:IsRunning() end
+local pathCache=Cache.new(8)
+local specCache=Cache.new(32)
+-- Paths are cached by their points; identical drafts reuse samples and frames.
 local function pathFor()
-    local path=G.path(points,smooth); path.linear=not smooth; return path
+    local key=Cache.pointsKey(points,smooth)
+    return pathCache:memo(key,function()
+        local path=G.path(points,smooth); path.linear=not smooth; path.key=key; return path
+    end)
 end
 local function hasMeshEntry()
     for _,e in ipairs(entries) do if e.enabled and P.MESH[e.o.preset] then return true end end
@@ -511,7 +518,7 @@ local function commit(allowUpload)
         end
         local layerCount
         overlays,layerCount=Layers.build(path,savedLayers,Assets.count,Assets.clone,MAX_PARTS,false)
-        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount})
+        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache})
         output.Name="Generated"
         overlays.Parent=output; count+=layerCount
         checkTarget()
@@ -593,7 +600,7 @@ local function previewNow(manual)
         for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
         local layerCount,partCount
         overlays,layerCount=Layers.build(path,list,Assets.count,Assets.clone,1000,true)
-        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET})
+        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache})
         if not active() then return end
         folder.Name="Preview"; folder.Archivable=false
         overlays.Archivable=false; overlays.Parent=folder
@@ -618,7 +625,7 @@ uploadButton=button("Authorize mesh uploads for next Generate: OFF",guarded(func
     setLive(false)
     uploadArmed=not uploadArmed
     uploadButton.Text=T(uploadArmed and "Authorize mesh uploads for next Generate: ON" or "Authorize mesh uploads for next Generate: OFF")
-    say(uploadArmed and "Next Generate uploads one new mesh per enabled mesh generator to Roblox under your account. They may remain even after undo." or "Mesh upload disabled.")
+    say(uploadArmed and "Next Generate uploads every enabled mesh generator to Roblox under your account (long sweeps upload one mesh per chunk). Uploads may remain even after undo." or "Mesh upload disabled.")
 end))
 button("Generate / update saved path",guarded(function()
     assert(not previewBusy,"Wait for preview to finish before generating")

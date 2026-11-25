@@ -49,6 +49,9 @@
     },
     "Ui": {
       "$path": "src/Ui.lua"
+    },
+    "Cache": {
+      "$path": "src/Cache.lua"
     }
   }
 }

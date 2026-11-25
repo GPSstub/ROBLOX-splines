@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7 — 2026-11-25
+### Added
+- Extrude chunking: long sweeps are split into up to 8 meshes (each within 60,000 vertices / 20,000 triangles). Chunk seams share exact positions and UVs; caps only at the two ends.
+- `Cache` module: drafts reuse computed paths, and Part-based generators reuse their part list when the path and settings did not change (faster preview while editing other generators).
+
+### Changed
+- Straight stretches of beams (rail feet/heads, road surface and lines, walls, fence rails) are merged into one long part. A straight 30-stud wall is now 1 part instead of 15.
+- Pipe joint balls are only placed where the pipe bends.
+- Every mesh generator is planned before anything is built, so profile and budget errors appear before any upload.
+
 ## v0.6 — 2026-11-25
 ### Added
 - Generator stack: up to 8 generators share one path, each with its own type, options, material slots, source and on/off switch. Several mesh generators (e.g. two Extrude profiles) can be built together.

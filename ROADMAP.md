@@ -7,7 +7,7 @@ checklist in TESTING.md. Studio checks happen every version, not only at v1.0.
 |---|---|---|
 | v0.5 | Editor preview, repeat layers | done |
 | v0.6 | Refactor into modules, generator stack | done |
-| v0.7 | Mesh quality, caching, optimization | planned |
+| v0.7 | Mesh quality, caching, optimization | done |
 | v0.8 | Asset and material library, recipes | planned |
 | v0.9a | Branching paths and intersections | planned |
 | v0.9b | Terrain draping, fill and carve | planned |

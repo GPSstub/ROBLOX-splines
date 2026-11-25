@@ -6,6 +6,7 @@ local Assets=require(script.Parent.Assets)
 local Materials=require(script.Parent.Materials)
 local Extrude=require(script.Parent.Extrude)
 local Deform=require(script.Parent.Deform)
+local Json=require(script.Parent.Json)
 local B={MAX_PARTS=6500}
 
 function B.part(parent,spec,collide,preview,style)
@@ -23,12 +24,18 @@ function B.part(parent,spec,collide,preview,style)
     return p
 end
 
--- Builds one generator into `folder`. Returns part count and preview meshes.
+-- Builds one generator into `folder`. Returns part count and a list of preview meshes.
 function B.entry(path,entry,folder,ctx,budget)
     local o=entry.o
     local styles=entry.styles or {}
     if P.PART_BASED[o.preset] then
-        local specs=P.parts(path,o,budget,ctx.budget or B.MAX_PARTS)
+        local function make() return P.parts(path,o,budget,ctx.budget or B.MAX_PARTS) end
+        -- Part specs are pure data; reuse them when the path and options are unchanged.
+        local specs
+        if ctx.cache and path.key then
+            specs=ctx.cache:memo(path.key.."|"..Json.encode(o),make)
+            assert(#specs<=budget,"Part budget exceeded ("..(ctx.budget or B.MAX_PARTS)..")")
+        else specs=make() end
         for _,spec in ipairs(specs) do B.part(folder,spec,o.collide,ctx.preview,styles[spec.name]) end
         return #specs
     elseif o.preset=="Custom" then
@@ -47,15 +54,22 @@ function B.entry(path,entry,folder,ctx,budget)
     end
     assert(budget>=1,"No budget left for base mesh")
     if not ctx.preview then assert(ctx.allowUpload,"Authorize mesh uploads before Generate") end
-    local part,mesh
     if o.preset=="Extrude" then
-        part,mesh=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh)
-    else
-        Assets.count(entry.source)
-        part,mesh=Deform.build(entry.source,path,o,ctx.canContinue,ctx.preview)
+        assert(#Extrude.plan(path,o).chunks<=budget,"No budget left for base mesh")
+        local parts,meshes=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh)
+        for _,part in ipairs(parts) do part.Parent=folder end
+        return #parts,meshes
     end
+    Assets.count(entry.source)
+    local part,mesh=Deform.build(entry.source,path,o,ctx.canContinue,ctx.preview)
     part.Parent=folder
-    return 1,mesh
+    return 1,mesh and {mesh} or {}
+end
+
+-- Parts a mesh generator will create, checked before anything is built.
+function B.meshParts(path,o)
+    if o.preset=="Extrude" then return #Extrude.plan(path,o).chunks end
+    return 1
 end
 
 -- Builds every enabled generator. ctx = {preview, allowUpload, canContinue, budget}.
@@ -76,17 +90,24 @@ function B.stack(path,entries,ctx)
             if ma~=mb then return ma<mb end
             return a<b
         end)
+        if not ctx.preview and not ctx.allowUpload then
+            for _,i in ipairs(order) do assert(not P.MESH[entries[i].o.preset],"Authorize mesh uploads before Generate") end
+        end
+        -- Plan every mesh first: profile/budget errors surface before any upload.
         local meshCount=0
-        for _,i in ipairs(order) do if P.MESH[entries[i].o.preset] then meshCount+=1 end end
+        local need={}
+        for _,i in ipairs(order) do
+            if P.MESH[entries[i].o.preset] then need[i]=B.meshParts(path,entries[i].o); meshCount+=need[i] end
+        end
         for _,i in ipairs(order) do
             local entry=entries[i]
             local folder=Instance.new("Folder"); folder.Name=string.format("G%02d_%s",i,entry.o.preset); folder.Parent=output
             -- Keep one part of budget per remaining mesh generator.
             local reserve=P.MESH[entry.o.preset] and 0 or meshCount
-            local n,mesh=B.entry(path,entry,folder,ctx,budget-count-reserve)
+            local n,built=B.entry(path,entry,folder,ctx,budget-count-reserve)
             count+=n
-            if P.MESH[entry.o.preset] then meshCount-=1 end
-            if mesh then meshes[#meshes+1]=mesh end
+            if need[i] then meshCount-=need[i] end
+            for _,m in ipairs(built or {}) do meshes[#meshes+1]=m end
             assert(count<=budget,"Part budget exceeded ("..budget..")")
         end
     end)

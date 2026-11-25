@@ -13,6 +13,7 @@ local Builder=require(script.Parent.Builder)
 local Persist=require(script.Parent.Persist)
 local Ui=require(script.Parent.Ui)
 local Version=require(script.Parent.Version)
+local Cache=require(script.Parent.Cache)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
@@ -71,8 +72,14 @@ local function number(key,lo,hi)
     return v
 end
 local function canContinue() return not unloading and widget.Enabled and not RunService:IsRunning() end
+local pathCache=Cache.new(8)
+local specCache=Cache.new(32)
+-- Paths are cached by their points; identical drafts reuse samples and frames.
 local function pathFor()
-    local path=G.path(points,smooth); path.linear=not smooth; return path
+    local key=Cache.pointsKey(points,smooth)
+    return pathCache:memo(key,function()
+        local path=G.path(points,smooth); path.linear=not smooth; path.key=key; return path
+    end)
 end
 local function hasMeshEntry()
     for _,e in ipairs(entries) do if e.enabled and P.MESH[e.o.preset] then return true end end
@@ -512,7 +519,7 @@ local function commit(allowUpload)
         end
         local layerCount
         overlays,layerCount=Layers.build(path,savedLayers,Assets.count,Assets.clone,MAX_PARTS,false)
-        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount})
+        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache})
         output.Name="Generated"
         overlays.Parent=output; count+=layerCount
         checkTarget()
@@ -594,7 +601,7 @@ local function previewNow(manual)
         for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
         local layerCount,partCount
         overlays,layerCount=Layers.build(path,list,Assets.count,Assets.clone,1000,true)
-        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET})
+        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache})
         if not active() then return end
         folder.Name="Preview"; folder.Archivable=false
         overlays.Archivable=false; overlays.Parent=folder
@@ -619,7 +626,7 @@ uploadButton=button("Authorize mesh uploads for next Generate: OFF",guarded(func
     setLive(false)
     uploadArmed=not uploadArmed
     uploadButton.Text=T(uploadArmed and "Authorize mesh uploads for next Generate: ON" or "Authorize mesh uploads for next Generate: OFF")
-    say(uploadArmed and "Next Generate uploads one new mesh per enabled mesh generator to Roblox under your account. They may remain even after undo." or "Mesh upload disabled.")
+    say(uploadArmed and "Next Generate uploads every enabled mesh generator to Roblox under your account (long sweeps upload one mesh per chunk). Uploads may remain even after undo." or "Mesh upload disabled.")
 end))
 button("Generate / update saved path",guarded(function()
     assert(not previewBusy,"Wait for preview to finish before generating")
@@ -935,7 +942,7 @@ function T.run()
         l.enabled=false; local _,empty=L.plan(p,{l},function() error("disabled") end,10); assert(empty==0)
     end)
     test(function() assert(not pcall(L.validate,{spacing=0,side=0,height=0,yaw=0,roll=0,enabled=true,collide=true})) end)
-    test(function() local specs=P.parts(G.path({V(0,0,0),V(0,0,-20)},false),P.options("Rail")); assert(#specs==92) end)
+    test(function() local specs=P.parts(G.path({V(0,0,0),V(0,0,-20)},false),P.options("Rail")); assert(#specs==16) end)
     test(function() local v=J.decode(J.encode({a={1,2},b="x"})); assert(v.a[2]==2 and v.b=="x") end)
     return n
 end
@@ -1041,36 +1048,59 @@ function E.profile(o)
     end
     return profile,closed
 end
+E.MAX_CHUNK_VERTICES=60000
+E.MAX_CHUNK_TRIANGLES=20000
+E.MAX_CHUNKS=8
+-- Long sweeps are split into chunks that each fit one EditableMesh. Chunks share
+-- their boundary ring position, and UVs use absolute path distance, so seams line up.
+function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices)
+    local capTris=closed and 2*(n-2) or 0
+    local perRing=edges*2
+    local maxRings=math.min(math.floor((maxTriangles-capTris)/perRing)+1,math.floor(maxVertices/n))
+    assert(maxRings&gt;=2,"Profile too detailed for one mesh; reduce profile sides")
+    local chunks={}
+    local first=1
+    while first&lt;sampleCount do
+        local last=math.min(sampleCount,first+maxRings-1)
+        chunks[#chunks+1]={first=first,last=last}
+        first=last
+    end
+    return chunks
+end
 function E.plan(path,o)
     local profile,closed=E.profile(o)
-    local samples=G.adaptive(path,o.step,math.rad(o.angle),o.tolerance,2000)
+    local samples=G.adaptive(path,o.step,math.rad(o.angle),o.tolerance,E.MAX_CHUNKS*2000)
     local n=#profile
     local edges=closed and n or n-1
+    local chunks=E.chunks(#samples,n,edges,closed,E.MAX_CHUNK_TRIANGLES,E.MAX_CHUNK_VERTICES)
+    assert(#chunks&lt;=E.MAX_CHUNKS,"Mesh budget exceeded; increase step/tolerance or reduce profile sides")
     local triangles=(#samples-1)*edges*2+(closed and 2*(n-2) or 0)
-    assert(#samples*n&lt;=60000 and triangles&lt;=20000,"Mesh budget exceeded; increase step/tolerance or reduce profile sides")
     local perimeter={0}
     for i=1,edges do perimeter[i+1]=perimeter[i]+(profile[i%n+1]-profile[i]).Magnitude end
-    return {profile=profile,closed=closed,samples=samples,edges=edges,triangles=triangles,vertices=#samples*n,perimeter=perimeter}
+    return {profile=profile,closed=closed,samples=samples,edges=edges,triangles=triangles,
+        vertices=#samples*n+(#chunks-1)*n,perimeter=perimeter,chunks=chunks}
 end
-function E.build(path,o,source,preview,canContinue,style)
-    local plan=E.plan(path,o)
+-- Builds one chunk (sample range first..last) into an EditableMesh and MeshPart.
+local function buildChunk(path,o,plan,chunk,source,preview,canContinue,style,index)
     local mesh,part
     local ok,result=pcall(function()
         mesh=A:CreateEditableMesh(); assert(mesh,"EditableMesh memory budget unavailable")
         local rings,uvs,normals={},{},{}
         local round=o.profile=="circle" or o.profile=="arch"
-        local anchor=G.at(path,0)
+        local anchor=G.at(path,plan.samples[chunk.first])
         local roll=math.rad(o.roll)
         local co,si=math.cos(roll),math.sin(roll)
         local n=#plan.profile
-        for i,d in ipairs(plan.samples) do
+        for i=chunk.first,chunk.last do
+            local d=plan.samples[i]
             local pos,_,r,u=G.frame(path,d)
             local right,up=r*co+u*si,u*co-r*si
-            rings[i]={}; uvs[i]={}; normals[i]={}
+            local k=i-chunk.first+1
+            rings[k]={}; uvs[k]={}; normals[k]={}
             for j,q in ipairs(plan.profile) do
-                rings[i][j]=mesh:AddVertex(pos-anchor+right*q.X+up*q.Y+Vector3.new(0,o.offset,0))
+                rings[k][j]=mesh:AddVertex(pos-anchor+right*q.X+up*q.Y+Vector3.new(0,o.offset,0))
             end
-            for j=1,plan.edges+1 do uvs[i][j]=mesh:AddUV(Vector2.new(d/o.uvLength,plan.perimeter[j]/o.uvWidth)) end
+            for j=1,plan.edges+1 do uvs[k][j]=mesh:AddUV(Vector2.new(d/o.uvLength,plan.perimeter[j]/o.uvWidth)) end
             -- Per-edge smoothing along length, with a hard profile corner.
             if round then
                 local rx=o.width/2
@@ -1078,13 +1108,13 @@ function E.build(path,o,source,preview,canContinue,style)
                 for j,q in ipairs(plan.profile) do
                     local normal=(right*(q.X/(rx*rx))+up*(q.Y/(ry*ry))).Unit
                     if o.profile=="arch" then normal=-normal end -- clockwise open profile winding
-                    normals[i][j]=mesh:AddNormal(normal)
+                    normals[k][j]=mesh:AddNormal(normal)
                 end
             else
                 for j=1,plan.edges do
                     local nextJ=j%n+1
                     local edge=plan.profile[nextJ]-plan.profile[j]
-                    normals[i][j]=mesh:AddNormal((right*edge.Y-up*edge.X).Unit)
+                    normals[k][j]=mesh:AddNormal((right*edge.Y-up*edge.X).Unit)
                 end
             end
         end
@@ -1106,20 +1136,26 @@ function E.build(path,o,source,preview,canContinue,style)
             end
         end
         if plan.closed then
-            for _,i in ipairs({1,#rings}) do
-                local _,f=G.frame(path,plan.samples[i])
-                local normal=mesh:AddNormal(i==1 and -f or f)
+            -- Caps only at the ends of the whole sweep, never between chunks.
+            local caps={}
+            if chunk.first==1 then caps[#caps+1]={ring=1,sample=chunk.first,start=true} end
+            if chunk.last==#plan.samples then caps[#caps+1]={ring=#rings,sample=chunk.last,start=false} end
+            for _,cap in ipairs(caps) do
+                local _,f=G.frame(path,plan.samples[cap.sample])
+                local normal=mesh:AddNormal(cap.start and -f or f)
                 local capUV={}
                 for j,q in ipairs(plan.profile) do capUV[j]=mesh:AddUV(Vector2.new(q.X/o.uvLength,q.Y/o.uvWidth)) end
                 for j=2,n-1 do
                     local b,c=j,j+1
-                    if i==#rings then b,c=c,b end
-                    tri(rings[i][1],rings[i][b],rings[i][c],capUV[1],capUV[b],capUV[c],normal,normal,normal)
+                    if not cap.start then b,c=c,b end
+                    tri(rings[cap.ring][1],rings[cap.ring][b],rings[cap.ring][c],capUV[1],capUV[b],capUV[c],normal,normal,normal)
                 end
             end
         end
         mesh:RemoveUnused()
-        part=O.create(mesh,anchor,o,"ExtrudedMesh",source,preview,canContinue)
+        local name=#plan.chunks&gt;1 and string.format("ExtrudedMesh_%02d",index) or "ExtrudedMesh"
+        part=O.create(mesh,anchor,o,name,source,preview,canContinue)
+        part.Name=name
         if not source then
             part.Material=Enum.Material.Concrete; part.Color=Color3.fromRGB(150,150,150)
             Materials.apply(part,style)
@@ -1130,9 +1166,25 @@ function E.build(path,o,source,preview,canContinue,style)
         return part
     end)
     if not ok then if part then part:Destroy() end; if mesh then mesh:Destroy() end; error(result,0) end
-    if preview then return result,mesh end
-    mesh:Destroy()
-    return result
+    return result,mesh
+end
+-- Returns a list of MeshParts (one per chunk) and, for previews, their EditableMeshes.
+function E.build(path,o,source,preview,canContinue,style)
+    local plan=E.plan(path,o)
+    local parts,meshes={},{}
+    local ok,err=pcall(function()
+        for i,chunk in ipairs(plan.chunks) do
+            local part,mesh=buildChunk(path,o,plan,chunk,source,preview,canContinue,style,i)
+            parts[#parts+1]=part
+            if preview then meshes[#meshes+1]=mesh else mesh:Destroy() end
+        end
+    end)
+    if not ok then
+        for _,p in ipairs(parts) do p:Destroy() end
+        for _,m in ipairs(meshes) do m:Destroy() end
+        error(err,0)
+    end
+    return parts,meshes
 end
 return E
 </ProtectedString></Properties></Item>
@@ -1416,7 +1468,7 @@ local ko={
     ["Clear preview"]="미리보기 지우기",
     ["Authorize mesh uploads for next Generate: ON"]="다음 생성 때 메시 업로드 허용: 켬",
     ["Authorize mesh uploads for next Generate: OFF"]="다음 생성 때 메시 업로드 허용: 끔",
-    ["Next Generate uploads one new mesh per enabled mesh generator to Roblox under your account. They may remain even after undo."]="다음 생성 때 켜진 메시 생성기마다 새 메시가 하나씩 내 계정으로 Roblox에 업로드돼요. 실행 취소해도 남아 있을 수 있어요.",
+    ["Next Generate uploads every enabled mesh generator to Roblox under your account (long sweeps upload one mesh per chunk). Uploads may remain even after undo."]="다음 생성 때 켜진 메시 생성기가 모두 내 계정으로 Roblox에 업로드돼요 (긴 메시는 조각마다 하나씩). 실행 취소해도 업로드는 남아 있을 수 있어요.",
     ["Generators share one path and are built in order. Custom repeats a model; Deform bends one static MeshPart; Extrude sweeps a profile. Generate commits; draft edits do not."]="생성기들은 경로 하나를 함께 쓰고 순서대로 만들어져요. 커스텀은 모델을 반복하고, 변형은 정적 MeshPart 하나를 구부리고, 압출은 단면을 경로를 따라 늘려요. 생성을 눌러야 반영되고, 초안 편집만으로는 바뀌지 않아요.",
     ["No material slots for this generator"]="이 생성기에는 재질 슬롯이 없어요",
     ["A path needs 1–8 generators"]="경로 하나에 생성기는 1~8개여야 해요",
@@ -1434,6 +1486,7 @@ local ko={
     ["JSON nesting too deep"]="JSON 중첩이 너무 깊어요",
     ["JSON object keys must be strings"]="JSON 객체 키는 문자열이어야 해요",
     ["JSON text expected"]="JSON 텍스트가 필요해요",
+    ["Profile too detailed for one mesh; reduce profile sides"]="단면이 너무 세밀해서 메시 하나에 안 들어가요. 단면 분할 수를 줄이세요",
 }
 
 -- Formatted messages: Lua pattern -&gt; function returning the Korean text.
@@ -1483,7 +1536,7 @@ end
 return Locale
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">Version</string><ProtectedString name="Source">-- Single source of the plugin version shown in the UI and written to saves.
-return {FULL="0.6.0",SHORT="0.6"}
+return {FULL="0.7.0",SHORT="0.7"}
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX11"><Properties><string name="Name">Json</string><ProtectedString name="Source">-- Small deterministic JSON codec (sorted object keys). Used for saved settings,
 -- recipes and cache keys so the same input always produces the same text.
@@ -1690,6 +1743,7 @@ function P.parts(path,o,limit,shown)
     end
     if o.preset=="Wall" or o.preset=="Fence" or o.preset=="Road" then assert(o.height&gt;0,"Height must be positive for this preset") end
     local ds=G.segments(path,o.step,2000)
+    local lastDir
     for i=1,#ds-1 do
         local a,_,ra,ua=frame(ds[i]); local b,_,rb,ub=frame(ds[i+1])
         local up=ua+ub; up=up.Magnitude&gt;1e-4 and up.Unit or ua
@@ -1714,7 +1768,10 @@ function P.parts(path,o,limit,shown)
             local cf,len=axisCF(aa,bb,up)
             if cf then
                 add("Pipe",cf*CFrame.Angles(0,math.pi/2,0),Vector3.new(len+0.04,o.width,o.width),"Metal",STEEL,"Cylinder")
-                if i&gt;1 then add("Joint",CFrame.new(aa),Vector3.new(o.width,o.width,o.width),"Metal",STEEL,"Ball") end
+                -- A joint ball only where the pipe actually bends.
+                local dir=(bb-aa).Unit
+                if lastDir and lastDir:Dot(dir)&lt;0.9999 then add("Joint",CFrame.new(aa),Vector3.new(o.width,o.width,o.width),"Metal",STEEL,"Ball") end
+                lastDir=dir
             end
         end
     end
@@ -1731,7 +1788,50 @@ function P.parts(path,o,limit,shown)
             end
         end
     end
-    return specs
+    return P.merge(specs)
+end
+
+-- Joins consecutive collinear beams of the same kind into one longer part.
+-- Straight stretches become a single part; curved geometry is unchanged.
+local function beamKey(s)
+    return string.format("%s|%.4f|%.4f|%s|%d,%d,%d",s.name,s.size.X,s.size.Y,s.material,s.color[1],s.color[2],s.color[3])
+end
+local function ends(s)
+    local look=s.cf.LookVector
+    local half=look*(s.size.Z/2)
+    return s.cf.Position-half,s.cf.Position+half,look
+end
+function P.merge(specs)
+    local out={}
+    local tails={} -- key -&gt; list of indexes in out that may still grow
+    for _,s in ipairs(specs) do
+        local merged=false
+        if not s.shape then
+            local key=beamKey(s)
+            local list=tails[key] or {}
+            tails[key]=list
+            local sa,sb,look=ends(s)
+            for _,idx in ipairs(list) do
+                local t=out[idx]
+                local ta,tb,tlook=ends(t)
+                local gap=sa-tb
+                local offAxis=gap-tlook*gap:Dot(tlook)
+                if tlook:Dot(look)&gt;0.99999 and t.cf.UpVector:Dot(s.cf.UpVector)&gt;0.99999
+                    and offAxis.Magnitude&lt;1e-3 and math.abs(gap:Dot(tlook))&lt;=0.2 then
+                    local len=(sb-ta):Dot(tlook)
+                    local center=ta+tlook*(len/2)
+                    out[idx]={name=t.name,cf=CFrame.lookAt(center,center+tlook,t.cf.UpVector),
+                        size=Vector3.new(t.size.X,t.size.Y,len),material=t.material,color=t.color}
+                    merged=true
+                    break
+                end
+            end
+            if not merged then out[#out+1]=s; list[#list+1]=#out end
+        else
+            out[#out+1]=s
+        end
+    end
+    return out
 end
 return P
 </ProtectedString></Properties></Item>
@@ -1778,6 +1878,7 @@ local Assets=require(script.Parent.Assets)
 local Materials=require(script.Parent.Materials)
 local Extrude=require(script.Parent.Extrude)
 local Deform=require(script.Parent.Deform)
+local Json=require(script.Parent.Json)
 local B={MAX_PARTS=6500}
 
 function B.part(parent,spec,collide,preview,style)
@@ -1795,12 +1896,18 @@ function B.part(parent,spec,collide,preview,style)
     return p
 end
 
--- Builds one generator into `folder`. Returns part count and preview meshes.
+-- Builds one generator into `folder`. Returns part count and a list of preview meshes.
 function B.entry(path,entry,folder,ctx,budget)
     local o=entry.o
     local styles=entry.styles or {}
     if P.PART_BASED[o.preset] then
-        local specs=P.parts(path,o,budget,ctx.budget or B.MAX_PARTS)
+        local function make() return P.parts(path,o,budget,ctx.budget or B.MAX_PARTS) end
+        -- Part specs are pure data; reuse them when the path and options are unchanged.
+        local specs
+        if ctx.cache and path.key then
+            specs=ctx.cache:memo(path.key.."|"..Json.encode(o),make)
+            assert(#specs&lt;=budget,"Part budget exceeded ("..(ctx.budget or B.MAX_PARTS)..")")
+        else specs=make() end
         for _,spec in ipairs(specs) do B.part(folder,spec,o.collide,ctx.preview,styles[spec.name]) end
         return #specs
     elseif o.preset=="Custom" then
@@ -1819,15 +1926,22 @@ function B.entry(path,entry,folder,ctx,budget)
     end
     assert(budget&gt;=1,"No budget left for base mesh")
     if not ctx.preview then assert(ctx.allowUpload,"Authorize mesh uploads before Generate") end
-    local part,mesh
     if o.preset=="Extrude" then
-        part,mesh=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh)
-    else
-        Assets.count(entry.source)
-        part,mesh=Deform.build(entry.source,path,o,ctx.canContinue,ctx.preview)
+        assert(#Extrude.plan(path,o).chunks&lt;=budget,"No budget left for base mesh")
+        local parts,meshes=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh)
+        for _,part in ipairs(parts) do part.Parent=folder end
+        return #parts,meshes
     end
+    Assets.count(entry.source)
+    local part,mesh=Deform.build(entry.source,path,o,ctx.canContinue,ctx.preview)
     part.Parent=folder
-    return 1,mesh
+    return 1,mesh and {mesh} or {}
+end
+
+-- Parts a mesh generator will create, checked before anything is built.
+function B.meshParts(path,o)
+    if o.preset=="Extrude" then return #Extrude.plan(path,o).chunks end
+    return 1
 end
 
 -- Builds every enabled generator. ctx = {preview, allowUpload, canContinue, budget}.
@@ -1848,17 +1962,24 @@ function B.stack(path,entries,ctx)
             if ma~=mb then return ma&lt;mb end
             return a&lt;b
         end)
+        if not ctx.preview and not ctx.allowUpload then
+            for _,i in ipairs(order) do assert(not P.MESH[entries[i].o.preset],"Authorize mesh uploads before Generate") end
+        end
+        -- Plan every mesh first: profile/budget errors surface before any upload.
         local meshCount=0
-        for _,i in ipairs(order) do if P.MESH[entries[i].o.preset] then meshCount+=1 end end
+        local need={}
+        for _,i in ipairs(order) do
+            if P.MESH[entries[i].o.preset] then need[i]=B.meshParts(path,entries[i].o); meshCount+=need[i] end
+        end
         for _,i in ipairs(order) do
             local entry=entries[i]
             local folder=Instance.new("Folder"); folder.Name=string.format("G%02d_%s",i,entry.o.preset); folder.Parent=output
             -- Keep one part of budget per remaining mesh generator.
             local reserve=P.MESH[entry.o.preset] and 0 or meshCount
-            local n,mesh=B.entry(path,entry,folder,ctx,budget-count-reserve)
+            local n,built=B.entry(path,entry,folder,ctx,budget-count-reserve)
             count+=n
-            if P.MESH[entry.o.preset] then meshCount-=1 end
-            if mesh then meshes[#meshes+1]=mesh end
+            if need[i] then meshCount-=need[i] end
+            for _,m in ipairs(built or {}) do meshes[#meshes+1]=m end
             assert(count&lt;=budget,"Part budget exceeded ("..budget..")")
         end
     end)
@@ -2036,4 +2157,46 @@ function U.new(widget,T,isBusy)
     return ui
 end
 return U
+</ProtectedString></Properties></Item>
+<Item class="ModuleScript" referent="RBX17"><Properties><string name="Name">Cache</string><ProtectedString name="Source">-- Small least-recently-used cache for pure results (paths, part specs).
+-- Keys are strings, usually Json.encode of every input that affects the result.
+local Json=require(script.Parent.Json)
+local C={}
+C.__index=C
+function C.new(max)
+    return setmetatable({max=max or 16,map={},order={},hits=0,misses=0},C)
+end
+local function touch(self,key)
+    local order=self.order
+    local i=table.find(order,key)
+    if i then table.remove(order,i) end
+    order[#order+1]=key
+end
+function C:get(key)
+    local v=self.map[key]
+    if v~=nil then self.hits+=1; touch(self,key) else self.misses+=1 end
+    return v
+end
+function C:put(key,v)
+    self.map[key]=v; touch(self,key)
+    while #self.order&gt;self.max do
+        local old=table.remove(self.order,1); self.map[old]=nil
+    end
+    return v
+end
+-- Returns the cached value for key, computing it with fn() on a miss.
+-- Errors are not cached.
+function C:memo(key,fn)
+    local v=self:get(key)
+    if v==nil then v=self:put(key,fn()) end
+    return v
+end
+function C:clear() self.map={}; self.order={} end
+-- Stable key for a list of Vector3 points plus extra settings.
+function C.pointsKey(points,extra)
+    local flat={}
+    for i,p in ipairs(points) do flat[i]={p.X,p.Y,p.Z} end
+    return Json.encode({p=flat,x=extra})
+end
+return C
 </ProtectedString></Properties></Item></Item></roblox>

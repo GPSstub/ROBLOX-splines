@@ -201,7 +201,7 @@ local ko={
     ["Clear preview"]="미리보기 지우기",
     ["Authorize mesh uploads for next Generate: ON"]="다음 생성 때 메시 업로드 허용: 켬",
     ["Authorize mesh uploads for next Generate: OFF"]="다음 생성 때 메시 업로드 허용: 끔",
-    ["Next Generate uploads one new mesh per enabled mesh generator to Roblox under your account. They may remain even after undo."]="다음 생성 때 켜진 메시 생성기마다 새 메시가 하나씩 내 계정으로 Roblox에 업로드돼요. 실행 취소해도 남아 있을 수 있어요.",
+    ["Next Generate uploads every enabled mesh generator to Roblox under your account (long sweeps upload one mesh per chunk). Uploads may remain even after undo."]="다음 생성 때 켜진 메시 생성기가 모두 내 계정으로 Roblox에 업로드돼요 (긴 메시는 조각마다 하나씩). 실행 취소해도 업로드는 남아 있을 수 있어요.",
     ["Generators share one path and are built in order. Custom repeats a model; Deform bends one static MeshPart; Extrude sweeps a profile. Generate commits; draft edits do not."]="생성기들은 경로 하나를 함께 쓰고 순서대로 만들어져요. 커스텀은 모델을 반복하고, 변형은 정적 MeshPart 하나를 구부리고, 압출은 단면을 경로를 따라 늘려요. 생성을 눌러야 반영되고, 초안 편집만으로는 바뀌지 않아요.",
     ["No material slots for this generator"]="이 생성기에는 재질 슬롯이 없어요",
     ["A path needs 1–8 generators"]="경로 하나에 생성기는 1~8개여야 해요",
@@ -219,6 +219,7 @@ local ko={
     ["JSON nesting too deep"]="JSON 중첩이 너무 깊어요",
     ["JSON object keys must be strings"]="JSON 객체 키는 문자열이어야 해요",
     ["JSON text expected"]="JSON 텍스트가 필요해요",
+    ["Profile too detailed for one mesh; reduce profile sides"]="단면이 너무 세밀해서 메시 하나에 안 들어가요. 단면 분할 수를 줄이세요",
 }
 
 -- Formatted messages: Lua pattern -> function returning the Korean text.

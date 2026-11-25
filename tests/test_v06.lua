@@ -35,8 +35,8 @@ t.check("presets: rail on a 20 stud straight path",function()
     local specs=P.parts(straight(20),P.options("Rail"))
     local n={}
     for _,s in ipairs(specs) do n[s.name]=(n[s.name] or 0)+1 end
-    -- 20 segments x 2 sides for foot and head; sleepers every 1.8 studs -> 12.
-    assert(n.RailFoot==40 and n.RailHead==40 and n.Sleeper==12,("%d %d %d"):format(n.RailFoot,n.RailHead,n.Sleeper))
+    -- Straight path: each rail side merges into one foot and one head; sleepers every 1.8 studs -> 12.
+    assert(n.RailFoot==2 and n.RailHead==2 and n.Sleeper==12,("%d %d %d"):format(n.RailFoot,n.RailHead,n.Sleeper))
 end)
 t.check("presets: every part-based preset builds on a curve",function()
     local p=G.path({V(0,0,0),V(10,0,-10),V(20,5,0)},true)
@@ -66,7 +66,7 @@ t.check("builder: stack builds each enabled generator into its own folder",funct
     assert(table.concat(names,",")=="G01_Rail,G02_Wall",table.concat(names,","))
     local total=0
     for _,c in ipairs(out:GetDescendants()) do if c:IsA("BasePart") then total+=1 end end
-    assert(total==count and count==92+10,"count "..count)
+    assert(total==count and count==16+1,"count "..count)
 end)
 t.check("builder: material slot style is applied to matching parts",function()
     local e=entry("Wall")
