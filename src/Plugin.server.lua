@@ -6,17 +6,18 @@ local Deform=require(script.Parent.Deform)
 local Extrude=require(script.Parent.Extrude)
 local Layers=require(script.Parent.Layers)
 local SelfTest=require(script.Parent.SelfTest)
+local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
 local History=game:GetService("ChangeHistoryService")
 local RunService=game:GetService("RunService")
 local Storage=game:GetService("ServerStorage")
 local Http=game:GetService("HttpService")
 local toolbar=plugin:CreateToolbar("PathForge")
-local tool=toolbar:CreateButton("PathForge", "Procedural path and asset editor", "", "PathForge")
+local tool=toolbar:CreateButton("PathForge", T("Procedural path and asset editor"), "", "PathForge")
 tool.ClickableWhenViewportHidden=true
 local info=DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right,false,false,340,700,290,360)
 local widget=plugin:CreateDockWidgetPluginGuiAsync("PathForge_Editor_v1",info)
-widget.Title="PathForge | Level Toolkit"
+widget.Title=T("PathForge | Level Toolkit")
 local mouse=plugin:GetMouse()
 local presets={"Rail","Road","Wall","Fence","Pipe","Custom","Deform","Extrude"}
 local defaults={Rail={width=3.2,height=0.2,spacing=1.8,step=1},Road={width=12,height=0.35,spacing=8,step=2},Wall={width=0.8,height=8,spacing=5,step=2},Fence={width=0.3,height=4,spacing=5,step=2},Pipe={width=1.4,height=1.5,spacing=8,step=1},Custom={width=1,height=0,spacing=5,step=2},Deform={width=1,height=0,spacing=5,step=2},Extrude={width=6,height=1,spacing=5,step=2}}
@@ -45,7 +46,7 @@ local liveButton
 local function setLive(enabled)
     liveEnabled=enabled
     previewDue=enabled and os.clock()+0.35 or nil
-    if liveButton then liveButton.Text=enabled and "Auto preview: ON" or "Auto preview: OFF" end
+    if liveButton then liveButton.Text=T(enabled and "Auto preview: ON" or "Auto preview: OFF") end
 end
 local fidelity="Default"
 local function clearMeshPreview()
@@ -57,7 +58,7 @@ local function clearMeshPreview()
 end
 local function resetUpload()
     uploadArmed=false
-    if uploadButton then uploadButton.Text="Authorize ONE mesh upload: OFF" end
+    if uploadButton then uploadButton.Text=T("Authorize ONE mesh upload: OFF") end
 end
 local syncMaterials=function() end
 local points={}
@@ -110,17 +111,17 @@ local function item(class,props)
     return obj
 end
 local function label(text,h,color)
-    return item("TextLabel",{Size=UDim2.new(1,0,0,h or 22),BackgroundTransparency=1,Text=text,TextColor3=color or C.text,Font=Enum.Font.Gotham,TextSize=13,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
+    return item("TextLabel",{Size=UDim2.new(1,0,0,h or 22),BackgroundTransparency=1,Text=T(text),TextColor3=color or C.text,Font=Enum.Font.Gotham,TextSize=13,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
 end
 local function button(text,fn,accent)
-    local b=item("TextButton",{Size=UDim2.new(1,0,0,32),BackgroundColor3=accent and C.accent or C.panel,BorderSizePixel=0,Text=text,TextColor3=C.text,Font=Enum.Font.GothamMedium,TextSize=13,AutoButtonColor=true})
+    local b=item("TextButton",{Size=UDim2.new(1,0,0,32),BackgroundColor3=accent and C.accent or C.panel,BorderSizePixel=0,Text=T(text),TextColor3=C.text,Font=Enum.Font.GothamMedium,TextSize=13,AutoButtonColor=true})
     make("UICorner",b,{CornerRadius=UDim.new(0,5)})
     b.Activated:Connect(function() if not busy then fn() end end)
     return b
 end
 local function input(key,title,value)
     local row=item("Frame",{Size=UDim2.new(1,0,0,30),BackgroundTransparency=1})
-    make("TextLabel",row,{Size=UDim2.fromScale(0.59,1),BackgroundTransparency=1,Text=title,TextColor3=C.muted,Font=Enum.Font.Gotham,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left})
+    make("TextLabel",row,{Size=UDim2.fromScale(0.59,1),BackgroundTransparency=1,Text=T(title),TextColor3=C.muted,Font=Enum.Font.Gotham,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left})
     local box=make("TextBox",row,{Position=UDim2.fromScale(0.6,0),Size=UDim2.fromScale(0.4,1),BackgroundColor3=C.panel,BorderSizePixel=0,Text=tostring(value),TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=13,ClearTextOnFocus=false})
     make("UICorner",box,{CornerRadius=UDim.new(0,4)})
     fields[key]=box
@@ -130,14 +131,14 @@ local title=label("PATHFORGE   /   0.5",28)
 title.Font=Enum.Font.GothamBold; title.TextSize=19
 local nav=item("Frame",{Size=UDim2.new(1,0,0,32),BackgroundTransparency=1})
 for i,name in ipairs({"Path","Shape","Layers","Build"}) do
-    local b=make("TextButton",nav,{Position=UDim2.new((i-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=name,TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
+    local b=make("TextButton",nav,{Position=UDim2.new((i-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=T(name),TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
     make("UICorner",b,{CornerRadius=UDim.new(0,4)}); sectionButtons[name]=b
     b.Activated:Connect(function() selectSection(name); scroll.CanvasPosition=Vector2.zero end)
 end
 local status=label("Create a path or load a saved PathForge model.",46)
 currentSection="Path"
 label("01   PATH / CONTROL POINTS",22,C.muted)
-local function say(t,err) status.Text=t; status.TextColor3=err and C.error or C.text end
+local function say(t,err) status.Text=T(t); status.TextColor3=err and C.error or C.text end
 local function guarded(fn)
     return function(...)
         if busy then return end
@@ -237,7 +238,7 @@ input("x","Selected X",0); input("y","Selected Y",0); input("z","Selected Z",0)
 input("grid","Placement grid (0 = off)",0)
 input("plane","Empty-space plane Y",0)
 refreshLabel=function()
-    pointLabel.Text=string.format("%d points   |   Node %d   |   %s",#points,selected,root and "Editing saved path" or "New path")
+    pointLabel.Text=T(string.format("%d points   |   Node %d   |   %s",#points,selected,root and "Editing saved path" or "New path"))
     local p=points[selected]
     if p then for k,v in pairs({x=p.X,y=p.Y,z=p.Z}) do fields[k].Text=string.format("%.3f",v) end end
 end
@@ -316,11 +317,11 @@ label("02   GENERATOR / PARAMETERS",22,C.muted)
 local presetButton,smoothButton,collisionButton,assetLabel
 local presetChoices={}
 syncButtons=function()
-    presetButton.Text="Generator: "..preset
+    presetButton.Text=T("Generator: "..preset)
     for name,b in pairs(presetChoices) do b.BackgroundColor3=name==preset and C.accent or C.panel end
-    smoothButton.Text=smooth and "Curve: Smooth spline" or "Curve: Straight segments"
-    collisionButton.Text=collide and "Collision: ON" or "Collision: OFF"
-    assetLabel.Text=asset and ("Asset: "..asset.Name) or "Asset: none (Custom / Deform)"
+    smoothButton.Text=T(smooth and "Curve: Smooth spline" or "Curve: Straight segments")
+    collisionButton.Text=T(collide and "Collision: ON" or "Collision: OFF")
+    assetLabel.Text=T(asset and ("Asset: "..asset.Name) or "Asset: none (Custom / Deform)")
     if preset~="Deform" and preset~="Extrude" then resetUpload() end
     -- Upload authorization is in Build, always visible when that tab is selected.
 end
@@ -332,7 +333,7 @@ for row=0,1 do
     local panel=item("Frame",{Size=UDim2.new(1,0,0,29),BackgroundTransparency=1})
     for col=1,4 do
         local name=presets[row*4+col]
-        local b=make("TextButton",panel,{Position=UDim2.new((col-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=name,TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
+        local b=make("TextButton",panel,{Position=UDim2.new((col-1)/4,2,0,0),Size=UDim2.new(1/4,-4,1,0),Text=T(name),TextSize=12,Font=Enum.Font.GothamMedium,TextColor3=C.text,BackgroundColor3=C.panel,BorderSizePixel=0})
         make("UICorner",b,{CornerRadius=UDim.new(0,4)}); presetChoices[name]=b
         b.Activated:Connect(function()
             if busy or preset==name then return end
@@ -361,7 +362,7 @@ local collisionModes={"Default","Box","Hull","PreciseConvexDecomposition"}
 local fidelityButton
 fidelityButton=button("Mesh collision: Default",function()
     fidelity=collisionModes[(table.find(collisionModes,fidelity) or 1)%#collisionModes+1]
-    fidelityButton.Text="Mesh collision: "..fidelity; clearMeshPreview()
+    fidelityButton.Text=T("Mesh collision: "..fidelity); clearMeshPreview()
 end)
 assetLabel=label("Asset: none (Custom preset only)",30,C.muted)
 local function validAsset(a)
@@ -384,10 +385,10 @@ label("02B  MATERIAL SLOTS",22,C.muted)
 local slotButton,styleLabel
 syncMaterials=function()
     local name=materialSlots[materialSlot]
-    if slotButton then slotButton.Text="Material slot: "..name end
+    if slotButton then slotButton.Text=T("Material slot: "..name) end
     if styleLabel then
         local style=styles[name]
-        styleLabel.Text=style and (style.material.." / "..(style.variant~="" and style.variant or "default").." / "..#style.textures.." textures") or "Preset default (no override)"
+        styleLabel.Text=T(style and (style.material.." / "..(style.variant~="" and style.variant or "default").." / "..#style.textures.." textures") or "Preset default (no override)")
     end
 end
 slotButton=button("Material slot: RailFoot",function()
@@ -434,12 +435,12 @@ input("layerRoll","Roll (degrees)",0)
 local enabledButton,layerCollisionButton
 syncLayers=function()
     local l=repeatLayers[layerIndex]
-    layerTitle.Text=l and string.format("%d / %d  |  %s",layerIndex,#repeatLayers,l.source and l.source.Name or "Missing source") or "No repeat layers"
+    layerTitle.Text=T(l and string.format("%d / %d  |  %s",layerIndex,#repeatLayers,l.source and l.source.Name or "Missing source") or "No repeat layers")
     if l then
         for k,v in pairs({layerSpacing=l.spacing,layerSide=l.side,layerHeight=l.height,layerYaw=l.yaw,layerRoll=l.roll}) do fields[k].Text=tostring(v) end
     end
-    if enabledButton then enabledButton.Text=l and (l.enabled and "Layer enabled: ON" or "Layer enabled: OFF") or "Layer enabled: —" end
-    if layerCollisionButton then layerCollisionButton.Text=l and (l.collide and "Layer collision: ON" or "Layer collision: OFF") or "Layer collision: —" end
+    if enabledButton then enabledButton.Text=T(l and (l.enabled and "Layer enabled: ON" or "Layer enabled: OFF") or "Layer enabled: —") end
+    if layerCollisionButton then layerCollisionButton.Text=T(l and (l.collide and "Layer collision: ON" or "Layer collision: OFF") or "Layer collision: —") end
 end
 button("Add selected model as repeat layer",guarded(function()
     editAllowed(); local a=Selection:Get()[1]; validAsset(a); assert(a.Parent,"Select an existing asset")
@@ -687,7 +688,7 @@ local function loadSelected()
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated"); points=pp; selected=1; preset=pr; smooth=meta:GetAttribute("smooth")==true; collide=meta:GetAttribute("collide")==true
     for _,k in ipairs({"width","height","spacing","step","offset","yaw","roll","sides","uvLength","uvWidth","angle","tolerance"}) do local v=meta:GetAttribute(k); if type(v)=="number" then fields[k].Text=tostring(v) elseif k=="sides" then fields[k].Text="16" elseif k=="uvLength" or k=="uvWidth" then fields[k].Text="4" elseif k=="angle" then fields[k].Text="8" elseif k=="tolerance" then fields[k].Text="0.05" end end
     fields.profile.Text=meta:GetAttribute("profile") or "rectangle"
-    local savedFidelity=meta:GetAttribute("fidelity"); fidelity=table.find(collisionModes,savedFidelity) and savedFidelity or "Default"; fidelityButton.Text="Mesh collision: "..fidelity
+    local savedFidelity=meta:GetAttribute("fidelity"); fidelity=table.find(collisionModes,savedFidelity) and savedFidelity or "Default"; fidelityButton.Text=T("Mesh collision: "..fidelity)
     local ref=meta:FindFirstChild("Asset"); asset=ref and ref:IsA("ObjectValue") and ref.Value or nil
     local saved=meta:GetAttribute("materialStyles"); styles=type(saved)=="string" and Http:JSONDecode(saved) or {}; syncMaterials()
     syncButtons(); refreshLabel(); refreshPreview(); say("Loaded saved path. Generate updates only this model's output.")
@@ -733,7 +734,7 @@ uploadButton=button("Authorize ONE mesh upload: OFF",guarded(function()
     editAllowed(); assert(preset=="Deform" or preset=="Extrude","Only mesh generators need an asset upload")
     setLive(false)
     uploadArmed=not uploadArmed
-    uploadButton.Text=uploadArmed and "Authorize ONE mesh upload: ON" or "Authorize ONE mesh upload: OFF"
+    uploadButton.Text=T(uploadArmed and "Authorize ONE mesh upload: ON" or "Authorize ONE mesh upload: OFF")
     say(uploadArmed and "Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo." or "Mesh upload disabled.")
 end))
 button("Generate / update saved path",guarded(function()

@@ -4,6 +4,7 @@ Uses Lua 5.4 (via the `lupa` package) plus small Roblox shims. Luau-only syntax
 (`x+=y`) is rewritten to plain Lua before loading. Usage: python tests/run.py
 """
 import pathlib, re, sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import lupa.lua54 as lupa
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -46,6 +47,20 @@ def main(extra=()):
         except lupa.LuaError as e:
             failures += 1
             print(f"FAIL  {label}: {e}")
+    import locale_check
+    english_ok, missing = locale_check.check(lua)
+    if english_ok and not missing:
+        print("PASS  Korean translation covers all UI strings; English unchanged")
+    else:
+        failures += 1
+        print("FAIL  translation:", "English text changed" if not english_ok else "", *[f"\n    missing: {s}" for s in missing])
+    sys.path.insert(0, str(ROOT / "tools"))
+    import build_rbxmx
+    if (ROOT / "PathForge.rbxmx").read_text(encoding="utf-8") == build_rbxmx.build():
+        print("PASS  PathForge.rbxmx matches src/")
+    else:
+        failures += 1
+        print("FAIL  PathForge.rbxmx is out of date: run python tools/build_rbxmx.py")
     return failures
 
 if __name__ == "__main__":

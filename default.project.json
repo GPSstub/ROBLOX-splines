@@ -25,6 +25,9 @@
     },
     "Layers": {
       "$path": "src/Layers.lua"
+    },
+    "Locale": {
+      "$path": "src/Locale.lua"
     }
   }
 }

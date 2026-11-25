@@ -14,6 +14,8 @@ Next: Studio verification, general multi-generator layers, asset library, cachin
 ## Install
 Download `PathForge.rbxmx`, insert into an empty Studio place, right-click the model in Explorer and Save as Local Plugin. Open Plugins > PathForge. Alternatively use Rojo 7: `rojo build -o PathForge.rbxmx`.
 
+The editor UI follows Studio's language: Korean (한국어) when Studio is set to Korean, English otherwise. Translations live in `src/Locale.lua`.
+
 ## Workflow
 1. Path tab: add points in viewport; move, insert or edit XYZ. In Move mode, use axis handles if supported or surface dragging. Set smooth/linear and grid. Shape tab: select the base generator and material.
 2. Choose Rail/Road/Wall/Fence/Pipe (Part presets), Custom (repeat static source models), Deform (bend one static MeshPart), or Extrude (sweep a profile).
@@ -33,6 +35,6 @@ Download `PathForge.rbxmx`, insert into an empty Studio place, right-click the m
 - Repeat overlays share a path with one base generator. Multiple mesh generators per path, terrain, scatter, general graph, and caching are not implemented.
 
 ## Verification
-Source and installation package parity checked. The plugin includes 15 geometry self-tests; they have not been executed in Studio. See TESTING.md for manual acceptance steps.
+Run `pip install lupa` then `python tests/run.py` to execute the 15 geometry self-tests plus regression, translation and package checks outside Studio (also run by GitHub Actions). After editing `src/`, rebuild the package with `python tools/build_rbxmx.py`. Studio UI behaviour is still untested; see TESTING.md for manual acceptance steps.
 
 API references: https://create.roblox.com/docs/reference/engine/classes/EditableMesh and https://create.roblox.com/docs/reference/engine/classes/AssetService.
