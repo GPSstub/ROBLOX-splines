@@ -64,6 +64,9 @@
     },
     "Scatter": {
       "$path": "src/Scatter.lua"
+    },
+    "DraftHistory": {
+      "$path": "src/DraftHistory.lua"
     }
   }
 }

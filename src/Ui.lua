@@ -1,6 +1,25 @@
 -- Widget building helpers: tabbed sections, labels, buttons, button rows, inputs.
 local U={}
 U.C={bg=Color3.fromRGB(24,28,34),panel=Color3.fromRGB(38,44,52),text=Color3.fromRGB(232,237,242),muted=Color3.fromRGB(157,170,185),accent=Color3.fromRGB(36,126,146),error=Color3.fromRGB(255,147,139)}
+-- Follows Studio's light/dark theme when available; keeps the defaults otherwise.
+function U.applyTheme(theme)
+    if not theme then return false end
+    local ok=pcall(function()
+        local g=Enum.StudioStyleGuideColor
+        U.C.bg=theme:GetColor(g.MainBackground)
+        U.C.panel=theme:GetColor(g.Button)
+        U.C.text=theme:GetColor(g.MainText)
+        U.C.muted=theme:GetColor(g.DimmedText)
+        U.C.accent=theme:GetColor(g.DialogMainButton)
+        U.C.error=theme:GetColor(g.ErrorText)
+    end)
+    return ok
+end
+-- Checks a numeric field's text against an inclusive range.
+function U.check(text,lo,hi)
+    local v=tonumber(text)
+    return v~=nil and v==v and v>=lo and v<=hi
+end
 function U.make(class,parent,props)
     local o=Instance.new(class)
     for k,v in pairs(props or {}) do o[k]=v end
@@ -55,11 +74,19 @@ function U.new(widget,T,isBusy)
         end
         return out
     end
-    function ui.input(key,title,value)
+    -- range = {lo, hi}: invalid numbers turn red as they are typed.
+    function ui.input(key,title,value,range)
         local row=ui.item("Frame",{Size=UDim2.new(1,0,0,30),BackgroundTransparency=1})
         make("TextLabel",row,{Size=UDim2.fromScale(0.59,1),BackgroundTransparency=1,Text=T(title),TextColor3=C.muted,Font=Enum.Font.Gotham,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
         local box=make("TextBox",row,{Position=UDim2.fromScale(0.6,0),Size=UDim2.fromScale(0.4,1),BackgroundColor3=C.panel,BorderSizePixel=0,Text=tostring(value),TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=13,ClearTextOnFocus=false})
         make("UICorner",box,{CornerRadius=UDim.new(0,4)})
+        if range then
+            local stroke=make("UIStroke",box,{Color=C.error,Thickness=1,Enabled=false})
+            box:GetPropertyChangedSignal("Text"):Connect(function()
+                local ok=U.check(box.Text,range[1],range[2])
+                box.TextColor3=ok and C.text or C.error; stroke.Enabled=not ok
+            end)
+        end
         ui.fields[key]=box
         return box
     end

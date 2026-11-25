@@ -309,6 +309,22 @@ local ko={
     ["Scale range must be 0–20 with min ≤ max"]="크기 범위는 0~20이고 최소가 최대보다 작거나 같아야 해요",
     ["Too many scatter instances: lower the density or band"]="흩뿌릴 개수가 너무 많아요. 밀도나 폭을 줄이세요",
     ["Brush radius must be 0–200 studs"]="브러시 반경은 0~200스터드여야 해요",
+
+    -- v0.11 UI/UX
+    ["Undo draft edit"]="초안 편집 취소", ["Redo draft edit"]="초안 편집 다시 실행",
+    ["Draft edit undone."]="초안 편집을 취소했어요.", ["Draft edit redone."]="초안 편집을 다시 실행했어요.",
+    ["Nothing to undo in the draft."]="초안에서 취소할 편집이 없어요.",
+    ["Nothing to redo in the draft."]="초안에서 다시 실행할 편집이 없어요.",
+    ["Generating…"]="생성 중…",
+    ["Generating… mesh uploads can take a while."]="생성 중… 메시 업로드는 시간이 걸릴 수 있어요.",
+    ["PathForge: Add points"]="PathForge: 점 추가",
+    ["PathForge: Move nodes"]="PathForge: 노드 이동",
+    ["PathForge: Stop viewport editing"]="PathForge: 뷰포트 편집 중지",
+    ["PathForge: Delete selected node"]="PathForge: 선택한 노드 삭제",
+    ["PathForge: Undo draft edit"]="PathForge: 초안 편집 취소",
+    ["PathForge: Redo draft edit"]="PathForge: 초안 편집 다시 실행",
+    ["PathForge: Preview now"]="PathForge: 지금 미리보기",
+    ["PathForge: Generate / update"]="PathForge: 생성 / 업데이트",
 }
 
 -- Formatted messages: Lua pattern -> function returning the Korean text.

@@ -16,6 +16,7 @@ local Cache=require(script.Parent.Cache)
 local Library=require(script.Parent.Library)
 local Network=require(script.Parent.Network)
 local Scatter=require(script.Parent.Scatter)
+local DraftHistory=require(script.Parent.DraftHistory)
 local TerrainPlan=require(script.Parent.Terrain)
 local T=require(script.Parent.Locale).t
 local Selection=game:GetService("Selection")
@@ -30,6 +31,7 @@ local info=DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right,false,false,3
 local widget=plugin:CreateDockWidgetPluginGuiAsync("PathForge_Editor_v1",info)
 widget.Title=T("PathForge | Level Toolkit")
 local mouse=plugin:GetMouse()
+pcall(function() Ui.applyTheme(settings().Studio.Theme) end)
 local C=Ui.C
 local MAX_PARTS=Builder.MAX_PARTS
 local MAX_POINTS=128
@@ -59,7 +61,17 @@ local mode,dragging,lastMove=nil,false,0
 local axisHandles,axisStart,axisNode
 
 local ui=Ui.new(widget,T,function() return busy end)
-local label,button,input,row,fields=ui.label,ui.button,ui.input,ui.row,ui.fields
+local label,button,row,fields=ui.label,ui.button,ui.row,ui.fields
+-- Valid ranges for numeric fields; inputs turn red while out of range.
+local RANGES={x={-100000,100000},y={-100000,100000},z={-100000,100000},grid={0,100},plane={-100000,100000},
+    snapRadius={0.1,100},drapeOffset={-50,100},drapeSpacing={0,1000},terrainShoulder={0,100},terrainDepth={0,200},terrainClear={0,200},
+    layerSpacing={0.2,200},layerSide={-1000,1000},layerHeight={-1000,1000},layerYaw={-360,360},layerRoll={-360,360},
+    scatterBand={0.1,500},scatterGap={0,500},scatterDensity={0.001,100},scatterMin={0,100},scatterScaleMin={0.05,20},scatterScaleMax={0.05,20},
+    scatterSeed={0,1e9},brushRadius={0.5,200}}
+for k,spec in pairs(P.NUMBERS) do RANGES[k]={spec[1],spec[2]} end
+local function input(key,title,value) return ui.input(key,title,value,RANGES[key]) end
+local draftHistory=DraftHistory.new(50)
+local function remember() draftHistory:push({points=points,selected=selected}) end
 local status
 local function say(t,err) status.Text=T(t); status.TextColor3=err and C.error or C.text end
 local function guarded(fn)
@@ -71,6 +83,7 @@ local function guarded(fn)
 end
 local function editAllowed() assert(not RunService:IsRunning(),"Stop play testing before editing") end
 local function number(key,lo,hi)
+    if not lo then lo,hi=RANGES[key][1],RANGES[key][2] end
     local v=tonumber(fields[key].Text)
     assert(v and v==v and v>=lo and v<=hi,key.." must be between "..lo.." and "..hi)
     return v
@@ -258,7 +271,7 @@ local function resetDraft()
     points={}; selected=0; materialSlot=1; junctionsOn=true
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
 end
-button("New path / clear draft",guarded(function() editAllowed(); stopMode(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
+button("New path / clear draft",guarded(function() editAllowed(); stopMode(); remember(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
 button("Add points in viewport",guarded(function() startMode("add") end),true)
 button("Move nodes by dragging",guarded(function() startMode("move") end))
 button("Insert node after selected",guarded(function() assert(selected>0,"Select a node first"); startMode("insert") end))
@@ -275,8 +288,22 @@ refreshLabel=function()
     local p=points[selected]
     if p then for k,v in pairs({x=p.X,y=p.Y,z=p.Z}) do fields[k].Text=string.format("%.3f",v) end end
 end
-button("Apply selected XYZ",guarded(function() editAllowed(); assert(points[selected],"Select a node first"); points[selected]=Vector3.new(number("x",-100000,100000),number("y",-100000,100000),number("z",-100000,100000)); refreshPreview(); refreshLabel() end))
-button("Delete selected node",guarded(function() editAllowed(); if points[selected] then table.remove(points,selected); selected=math.min(selected,#points); refreshLabel(); refreshPreview() end end))
+button("Apply selected XYZ",guarded(function() editAllowed(); assert(points[selected],"Select a node first"); remember(); points[selected]=Vector3.new(number("x",-100000,100000),number("y",-100000,100000),number("z",-100000,100000)); refreshPreview(); refreshLabel() end))
+local deleteNode=guarded(function() editAllowed(); if points[selected] then remember(); table.remove(points,selected); selected=math.min(selected,#points); refreshLabel(); refreshPreview() end end)
+button("Delete selected node",deleteNode)
+local function restoreDraft(state)
+    points=state.points; selected=math.min(state.selected,#points)
+    refreshLabel(); refreshPreview()
+end
+local function undoDraft()
+    local s=draftHistory:undo({points=points,selected=selected})
+    if s then restoreDraft(s); say("Draft edit undone.") else say("Nothing to undo in the draft.") end
+end
+local function redoDraft()
+    local s=draftHistory:redo({points=points,selected=selected})
+    if s then restoreDraft(s); say("Draft edit redone.") else say("Nothing to redo in the draft.") end
+end
+row({{"Undo draft edit",guarded(function() editAllowed(); undoDraft() end)},{"Redo draft edit",guarded(function() editAllowed(); redoDraft() end)}})
 local smoothButton=button("Curve: Smooth spline",function() smooth=not smooth; syncButtons(); refreshPreview() end)
 label("01B  TERRAIN",22,C.muted)
 input("drapeOffset","Height above ground (studs)",0.5)
@@ -301,6 +328,7 @@ button("Drape points onto ground",guarded(function()
     else
         out,hit=TerrainPlan.drape(points,groundAt,offset)
     end
+    if hit>0 then remember() end
     points=out; selected=math.min(math.max(selected,1),#points); refreshLabel(); refreshPreview()
     say(string.format("Draped %d of %d points onto the ground.",hit,#points),hit==0)
 end))
@@ -338,6 +366,7 @@ button("Snap path ends onto nearby paths",guarded(function()
     local paths={}
     for _,other in ipairs(otherPaths()) do paths[#paths+1]=other.path end
     local snapped,n=Network.snapEnds(points,paths,number("snapRadius",0.1,100))
+    if n>0 then remember() end
     points=snapped; refreshLabel(); refreshPreview()
     say(n>0 and string.format("Snapped %d path end(s). Generate to build the branch.",n) or "No other path within the snap radius.",n==0)
 end))
@@ -369,13 +398,14 @@ mouse.Button1Down:Connect(guarded(function()
     if axisStart or not mode or not widget.Enabled or RunService:IsRunning() then return end
     local target=mouse.Target
     if target and preview and target.Parent==preview and target:GetAttribute("NodeIndex") then
-        selected=target:GetAttribute("NodeIndex"); dragging=mode=="move"; refreshLabel(); refreshPreview(); return
+        selected=target:GetAttribute("NodeIndex"); dragging=mode=="move"; if dragging then remember() end; refreshLabel(); refreshPreview(); return
     end
     if mode=="brush" or mode=="erase" then brush.begin(); return end
     if mode=="add" or mode=="insert" then
         assert(#points<MAX_POINTS,"Maximum 128 points")
         local p=hitPosition(number("plane",-100000,100000))
         if p then
+            remember()
             if mode=="insert" and selected>0 then selected+=1; table.insert(points,selected,p) else points[#points+1]=p; selected=#points end
             refreshLabel(); refreshPreview()
         end
@@ -404,7 +434,7 @@ do
         end
         axisHandles.MouseButton1Down:Connect(guarded(function()
             if mode~="move" or not points[selected] then return end
-            dragging=false; axisNode=selected; axisStart=points[selected]
+            dragging=false; axisNode=selected; axisStart=points[selected]; remember()
         end))
         axisHandles.MouseDrag:Connect(guarded(function(face,distance)
             if not axisStart or not axisNode or not points[axisNode] then return end
@@ -912,7 +942,7 @@ local function loadSelected()
     local state=Persist.read(meta,s:GetPivot())
     repeatLayers=state.layers; layerIndex=#repeatLayers>0 and 1 or 0; syncLayers()
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated")
-    points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
+    remember(); points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
     entries=state.entries; current=1; materialSlot=1; loadFields()
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
     say("Loaded saved path. Generate updates only this model's output.")
@@ -952,7 +982,8 @@ local function previewNow(manual)
     previewBusy=false
     if not ok and active() then say("Preview: "..tostring(err),true) end
 end
-button("Preview now (no upload)",guarded(function() editAllowed(); stopMode(); previewNow(true) end),true)
+local previewManual=guarded(function() editAllowed(); stopMode(); previewNow(true) end)
+button("Preview now (no upload)",previewManual,true)
 liveButton=row({
     {"Auto preview: OFF",guarded(function() editAllowed(); setLive(not liveEnabled); if not liveEnabled then clearMeshPreview() end end)},
     {"Clear preview",function() setLive(false); clearMeshPreview() end},
@@ -965,15 +996,17 @@ uploadButton=button("Authorize mesh uploads for next Generate: OFF",guarded(func
     uploadButton.Text=T(uploadArmed and "Authorize mesh uploads for next Generate: ON" or "Authorize mesh uploads for next Generate: OFF")
     say(uploadArmed and "Next Generate uploads every enabled mesh generator to Roblox under your account (long sweeps upload one mesh per chunk). Uploads may remain even after undo." or "Mesh upload disabled.")
 end))
-button("Generate / update saved path",guarded(function()
+local generateNow=guarded(function()
     assert(not previewBusy,"Wait for preview to finish before generating")
     local authorized=uploadArmed
     setLive(false); resetUpload(); clearMeshPreview()
+    say(authorized and "Generating… mesh uploads can take a while." or "Generating…")
     busy=true
     local ok,err=pcall(commit,authorized)
     busy=false
     if not ok then error(err,0) end
-end),true)
+end)
+button("Generate / update saved path",generateNow,true)
 button("Load selected saved path",guarded(loadSelected))
 button("Run geometry self-tests",guarded(function() editAllowed(); local n=SelfTest.run(); say(tostring(n).." geometry tests passed") end))
 row({
@@ -993,6 +1026,21 @@ local runConnection=RunService.Heartbeat:Connect(function()
     end
 end)
 tool.Click:Connect(function() widget.Enabled=not widget.Enabled end)
+-- Plugin actions: bind keyboard shortcuts in File > Advanced > Customize Shortcuts.
+local actions={
+    {"PathForgeAdd","PathForge: Add points",guarded(function() widget.Enabled=true; startMode("add") end)},
+    {"PathForgeMove","PathForge: Move nodes",guarded(function() widget.Enabled=true; startMode("move") end)},
+    {"PathForgeStop","PathForge: Stop viewport editing",function() stopMode() end},
+    {"PathForgeDelete","PathForge: Delete selected node",deleteNode},
+    {"PathForgeUndo","PathForge: Undo draft edit",guarded(function() editAllowed(); undoDraft() end)},
+    {"PathForgeRedo","PathForge: Redo draft edit",guarded(function() editAllowed(); redoDraft() end)},
+    {"PathForgePreview","PathForge: Preview now",previewManual},
+    {"PathForgeGenerate","PathForge: Generate / update",generateNow},
+}
+for _,a in ipairs(actions) do
+    local ok,action=pcall(function() return plugin:CreatePluginAction(a[1],T(a[2]),T(a[2]),"",true) end)
+    if ok and action then action.Triggered:Connect(function() if not busy then a[3]() end end) end
+end
 plugin.Unloading:Connect(function() unloading=true; resetUpload(); stopMode(); clearPreview(); if axisHandles then axisHandles:Destroy() end; runConnection:Disconnect() end)
 for _,field in pairs(fields) do
     if not field:GetAttribute("NoPreviewReset") then field:GetPropertyChangedSignal("Text"):Connect(clearMeshPreview) end

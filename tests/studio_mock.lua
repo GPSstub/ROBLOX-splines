@@ -42,7 +42,7 @@ function M.install()
         ServerStorage=env.storage,
         HttpService={GenerateGUID=function() return "abcdef12-0000" end},
         CoreGui=env.coreGui,
-        StudioService={StudioLocaleId="en_us"},
+        StudioService={StudioLocaleId=M.locale or "en_us"},
         AssetService={},
     }
     game={GetService=function(_,name) return services[name] or {} end,CreatorId=0}
@@ -57,7 +57,9 @@ function M.install()
         GetMouse=function() return env.mouse end,
         Activate=function() active=true end, Deactivate=function() active=false end, IsActivated=function() return active end,
         Deactivation=Signal.new(), Unloading=Signal.new(),
+        CreatePluginAction=function(_,id) local a={Triggered=Signal.new()}; env.actions[id]=a; return a end,
     }
+    env.actions={}
     function env.find(text,class)
         for _,d in ipairs(env.widget:GetDescendants()) do
             if (not class or d.ClassName==class) and d.Text==text then return d end

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.11 — 2026-11-25
+### Added
+- Draft undo/redo for point edits (add, insert, drag, axis move, XYZ, delete, drape, snap, new path, load), separate from Studio's undo, 50 steps.
+- Plugin actions for keyboard shortcuts (bind them in File > Advanced > Customize Shortcuts): add points, move nodes, stop editing, delete node, undo/redo draft, preview, generate.
+- Number fields turn red with an outline while their value is out of range.
+- The panel follows Studio's light/dark theme colors.
+- "Generating…" status while a build (and any upload) runs.
+- Tests: `tests/test_v11.lua` (undo history, field checks, theme, and the whole plugin loading and generating with Studio set to Korean).
+
 ## v0.10 — 2026-11-25
 ### Added
 - Scatter (Layers tab): pick one or more selected models as scatter assets, then **Scatter along path** places them randomly in a band on both sides of the path, keeping a clear zone over the path center, a minimum distance between assets, and a random scale range and rotation. A seed makes the layout repeatable. Assets are dropped onto the ground below.
