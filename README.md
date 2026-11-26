@@ -25,7 +25,7 @@ Alternatively build it yourself: `python tools/build_rbxmx.py` (or Rojo 7: `rojo
 - **Extrude**: sweeps a rectangle, circle, open arch or convex custom profile, with adaptive sampling, UVs and smooth round normals. Long sweeps are split into up to 8 meshes with invisible seams.
 - **Deform**: bends one static, dense MeshPart along the path.
 - **Library tab**: 21 material presets, your own saved materials, an asset library and **recipes** (a whole generator stack plus layers, reusable on any path). Everything is stored in `ServerStorage > PathForgeLibrary`, so it travels with the place.
-- **Branches and junctions**: snap path ends onto other paths. Where roads cross or meet, a junction pad replaces overlapping surfaces. Bridges more than 2 studs above are ignored.
+- **Branches and junctions**: snap path ends onto other paths. When two roads with junctions enabled cross or meet, they share a pad. Generate refreshes the connected road geometry in the same undo step. Bridges more than 2 studs above are ignored.
 - **Terrain**: drape points onto the ground (optionally re-sampled to follow hills), then fill terrain under the path and carve terrain above it in one undo step.
 - **Scatter and brush**: place assets in a band along the path with spacing, random scale and rotation, and a repeatable seed. Paint or erase them with a brush.
 - **Editor**: axis move handles, grid snapping, draft undo/redo, plugin actions you can bind to keys (File > Advanced > Customize Shortcuts), red highlighting for invalid fields, Studio theme colors, and Korean/English UI.
@@ -34,7 +34,7 @@ Alternatively build it yourself: `python tools/build_rbxmx.py` (or Rojo 7: `rojo
 Extrude and Deform need a mesh asset to keep their shape after the place is saved. Turn on **Authorize mesh uploads for next Generate**, then Generate. Each enabled mesh generator uploads its mesh (or one mesh per chunk) to the place owner, or to your account in an unpublished place. Studio Undo cannot remove an upload. Previews never upload. Part-based generators are built and every mesh is planned before any upload starts, so input errors stop the build first.
 
 ## Limits
-- 128 control points per path, 6,500 parts per generated model, and 60,000 vertices / 20,000 triangles per mesh chunk.
+- 128 control points per path, 6,500 parts per generated model, and 60,000 vertices / 20,000 triangles per mesh chunk. Merged parts and mesh chunks fit within Roblox's 2,048-stud limit per axis.
 - Custom Extrude profiles must be strictly convex. Very sharp curves can self-intersect.
 - Junction pads are flat slabs. They do not blend curb shapes or road markings.
 - MaterialVariants must exist in the destination place.

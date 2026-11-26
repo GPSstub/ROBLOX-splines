@@ -104,7 +104,7 @@ local ko={
     ["Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo."]="다음 생성 때 새 메시 하나가 내 계정으로 Roblox에 업로드돼요. 실행 취소해도 남아 있을 수 있어요.",
     ["Mesh upload disabled."]="메시 업로드를 껐어요.",
     ["Guides hidden. Draft retained."]="가이드를 숨겼어요. 초안은 유지돼요.",
-    ["Loaded saved path. Generate updates only this model's output."]="저장된 경로를 불러왔어요. 생성하면 이 모델의 결과만 업데이트돼요.",
+    ["Loaded saved path. Generate also refreshes junctions on connected roads."]="저장된 경로를 불러왔어요. 생성하면 연결된 도로의 교차로도 갱신돼요.",
 
     -- Errors (plugin)
     ["Stop play testing before editing"]="편집하기 전에 플레이 테스트를 멈추세요",
@@ -169,6 +169,8 @@ local ko={
     ["Duplicate profile point"]="단면에 겹치는 점이 있어요",
     ["Profile must be a strictly convex ordered polygon"]="단면은 순서대로 이어진 볼록 다각형이어야 해요",
     ["Mesh budget exceeded; increase step/tolerance or reduce profile sides"]="메시 한도를 넘었어요. 구간 길이나 오차 허용치를 늘리거나 단면 분할 수를 줄이세요",
+    ["Profile is too large for a mesh chunk; reduce its dimensions or the segment length"]="메시 청크가 너무 커요. 단면 크기나 구간 길이를 줄이세요",
+    ["Mesh dimensions exceed 2048 studs"]="메시 크기가 2048 스터드 한도를 넘었어요",
     ["EditableMesh memory budget unavailable"]="EditableMesh 메모리 한도가 부족해요",
     ["EditableMesh unavailable (permissions or memory budget)"]="EditableMesh를 쓸 수 없어요 (권한 또는 메모리 한도)",
     ["Layer spacing must be 0.2–200"]="레이어 간격은 0.2~200이어야 해요",

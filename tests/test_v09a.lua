@@ -75,4 +75,23 @@ t.check("builder: roads get a junction pad; other generators are untouched",func
     assert(#out:FindFirstChild("G02_Wall"):GetChildren()==1,"wall must not be cut")
     assert(entries[1]==road and road.o.cuts==nil,"caller's entries changed")
 end)
+t.check("road plan: three roads share one pad when they meet at one point",function()
+    local roads={
+        {path=line(V(-30,0,0),V(30,0,0)),width=12},
+        {path=line(V(0,0,-30),V(0,0,30)),width=12},
+        {path=line(V(-30,0,-30),V(30,0,30)),width=12},
+    }
+    local draft,updates=N.planRoads(roads,1,nil,true)
+    assert(#draft.junctions==1 and #draft.pads==0)
+    assert(#updates==2 and #updates[1].junctions==1 and #updates[2].junctions==1)
+    assert(#updates[1].pads==0 and #updates[2].pads==1,"expected one shared junction pad")
+end)
+t.check("road plan: moving a road away restores the old neighbor's surface",function()
+    local fixed={path=line(V(-30,0,0),V(30,0,0)),width=12}
+    local old={path=line(V(0,0,-30),V(0,0,30)),width=12}
+    local moved={path=line(V(50,0,-30),V(50,0,30)),width=12}
+    local draft,updates=N.planRoads({fixed,moved},2,old,true)
+    assert(#draft.junctions==0 and #draft.pads==0)
+    assert(#updates==1 and updates[1].road==fixed and #updates[1].junctions==0)
+end)
 return t.finish()

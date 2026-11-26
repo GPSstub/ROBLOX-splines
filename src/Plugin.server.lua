@@ -92,45 +92,58 @@ local function canContinue() return not unloading and widget.Enabled and not Run
 local pathCache=Cache.new(64)
 local specCache=Cache.new(32)
 -- Paths are cached by their points; identical drafts reuse samples and frames.
-local function pathFor()
-    local key=Cache.pointsKey(points,smooth)
+local function cachedPath(controlPoints,isSmooth)
+    local key=Cache.pointsKey(controlPoints,isSmooth)
     return pathCache:memo(key,function()
-        local path=G.path(points,smooth); path.linear=not smooth; path.key=key; return path
+        local path=G.path(controlPoints,isSmooth); path.linear=not isSmooth; path.key=key; return path
     end)
 end
--- Other saved PathForge paths in the Workspace (not the one being edited).
-local function otherPaths()
+local function pathFor() return cachedPath(points,smooth) end
+local function roadWidth(list)
+    local width
+    for _,e in ipairs(list) do
+        if e.enabled~=false and e.o.preset=="Road" then width=math.max(width or 0,e.o.width) end
+    end
+    return width
+end
+local function savedPaths(includeRoot)
     local out={}
     for _,m in ipairs(workspace:GetDescendants()) do
-        if m:IsA("Model") and m~=root and m:GetAttribute("PathForgeSchema")==1 and m:FindFirstChild("PathData") then
-            local ok,state=pcall(Persist.read,m:FindFirstChild("PathData"),m:GetPivot())
+        if m:IsA("Model") and (includeRoot or m~=root) and m:GetAttribute("PathForgeSchema")==1 and m:FindFirstChild("PathData") then
+            local meta,pivot=m:FindFirstChild("PathData"),m:GetPivot()
+            local ok,state=pcall(Persist.read,meta,pivot)
             if ok then
-                local key=Cache.pointsKey(state.points,state.smooth)
-                local okPath,path=pcall(function()
-                    return pathCache:memo(key,function()
-                        local p=G.path(state.points,state.smooth); p.linear=not state.smooth; p.key=key; return p
-                    end)
-                end)
+                local okPath,path=pcall(cachedPath,state.points,state.smooth)
                 if okPath then
-                    local width
-                    for _,e in ipairs(state.entries) do if e.enabled and e.o.preset=="Road" then width=width or e.o.width end end
-                    out[#out+1]={model=m,path=path,width=width}
+                    local output=m:FindFirstChild("Generated")
+                    out[#out+1]={model=m,path=path,entries=state.entries,meta=meta,pivot=pivot,output=output,
+                        width=state.junctions and output and roadWidth(state.entries) or nil}
                 end
             end
         end
     end
     return out
 end
-local function roadWidth(list)
-    for _,e in ipairs(list) do if e.enabled~=false and e.o.preset=="Road" then return e.o.width end end
-end
--- Road crossings with other saved road paths, when junctions are enabled.
-local function junctionsFor(path,list)
-    local width=roadWidth(list)
-    if not junctionsOn or not width then return {} end
+local function junctionPlan(path,list,updateNeighbors)
+    local width=junctionsOn and roadWidth(list) or nil
+    if not width and not (updateNeighbors and root) then return {junctions={},pads={}},{} end
+    local draft={path=path,width=width}
     local roads={}
-    for _,other in ipairs(otherPaths()) do if other.width then roads[#roads+1]=other end end
-    return Network.junctions(path,width,roads)
+    local index,previous
+    for _,saved in ipairs(savedPaths(true)) do
+        if saved.model==root then
+            if saved.width then previous=saved end
+            roads[#roads+1]=draft
+            index=#roads
+        elseif saved.width then
+            roads[#roads+1]=saved
+        end
+    end
+    if not index then
+        roads[#roads+1]=draft
+        index=#roads
+    end
+    return Network.planRoads(roads,index,previous,updateNeighbors)
 end
 local function hasMeshEntry()
     for _,e in ipairs(entries) do if e.enabled and P.MESH[e.o.preset] then return true end end
@@ -266,12 +279,13 @@ label("01   PATH / CONTROL POINTS",22,C.muted)
 local pointLabel=label("0 points",22)
 local function resetDraft()
     root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil
+    draftHistory:clear()
     entries={newEntry("Rail")}; current=1; loadFields()
     repeatLayers={}; layerIndex=0; syncLayers(); resetUpload()
     points={}; selected=0; materialSlot=1; junctionsOn=true
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
 end
-button("New path / clear draft",guarded(function() editAllowed(); stopMode(); remember(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
+button("New path / clear draft",guarded(function() editAllowed(); stopMode(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
 button("Add points in viewport",guarded(function() startMode("add") end),true)
 button("Move nodes by dragging",guarded(function() startMode("move") end))
 button("Insert node after selected",guarded(function() assert(selected>0,"Select a node first"); startMode("insert") end))
@@ -328,8 +342,10 @@ button("Drape points onto ground",guarded(function()
     else
         out,hit=TerrainPlan.drape(points,groundAt,offset)
     end
-    if hit>0 then remember() end
-    points=out; selected=math.min(math.max(selected,1),#points); refreshLabel(); refreshPreview()
+    if hit>0 then
+        remember()
+        points=out; selected=math.min(math.max(selected,1),#points); refreshLabel(); refreshPreview()
+    end
     say(string.format("Draped %d of %d points onto the ground.",hit,#points),hit==0)
 end))
 input("terrainShoulder","Terrain shoulder each side (studs)",2)
@@ -364,7 +380,7 @@ input("snapRadius","Branch snap radius (studs)",4)
 button("Snap path ends onto nearby paths",guarded(function()
     editAllowed(); assert(#points>=2,"Add at least two points")
     local paths={}
-    for _,other in ipairs(otherPaths()) do paths[#paths+1]=other.path end
+    for _,other in ipairs(savedPaths(false)) do paths[#paths+1]=other.path end
     local snapped,n=Network.snapEnds(points,paths,number("snapRadius",0.1,100))
     if n>0 then remember() end
     points=snapped; refreshLabel(); refreshPreview()
@@ -836,6 +852,28 @@ end))
 label("Materials, assets and recipes are stored in ServerStorage > PathForgeLibrary and travel with this place. ★ marks your own materials.",58,C.muted)
 
 -- Commit / load ----------------------------------------------------------------
+local function stageRoadUpdate(layout)
+    local road=layout.road
+    local entries={}
+    for i,e in ipairs(road.entries) do
+        entries[i]=e.o.preset=="Road" and e or {o=e.o,enabled=false}
+    end
+    local removed,retained={},0
+    for _,child in ipairs(road.output:GetChildren()) do
+        if child.Name=="Junctions" or child.Name:match("^G%d%d_Road$") then
+            removed[#removed+1]=child
+        else
+            if child:IsA("BasePart") then retained+=1 end
+            for _,descendant in ipairs(child:GetDescendants()) do
+                if descendant:IsA("BasePart") then retained+=1 end
+            end
+        end
+    end
+    local staged=Builder.stack(road.path,entries,{budget=MAX_PARTS-retained,cache=specCache,
+        junctions=layout.junctions,junctionPads=layout.pads})
+    return {road=road,staged=staged,removed=removed,added=staged:GetChildren()}
+end
+
 local function commit(allowUpload)
     editAllowed(); stopMode(); storeFields()
     local path=pathFor()
@@ -853,6 +891,7 @@ local function commit(allowUpload)
     checkTarget()
     local output,meta,createdLibrary,recording,overlays,count
     local pending,snapshots,savedLayers,savedEntries={}, {}, {}, {}
+    local roadUpdates={}
     local createdTarget=false
     local success,err=pcall(function()
         local library=Storage:FindFirstChild("PathForgeAssets")
@@ -885,10 +924,22 @@ local function commit(allowUpload)
         end
         local layerCount
         overlays,layerCount=Layers.build(path,savedLayers,Assets.count,Assets.clone,MAX_PARTS,false)
-        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache,junctions=junctionsFor(path,savedEntries)})
+        local layout,neighbors=junctionPlan(path,savedEntries,true)
+        for _,neighbor in ipairs(neighbors) do roadUpdates[#roadUpdates+1]=stageRoadUpdate(neighbor) end
+        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,
+            budget=MAX_PARTS-layerCount,cache=specCache,junctions=layout.junctions,junctionPads=layout.pads})
         output.Name="Generated"
         overlays.Parent=output; count+=layerCount
         checkTarget()
+        for _,update in ipairs(roadUpdates) do
+            local r=update.road
+            assert(r.model:IsDescendantOf(workspace) and r.model:FindFirstChild("Generated")==r.output
+                and r.model:FindFirstChild("PathData")==r.meta and r.model:GetPivot()==r.pivot,
+                "Path changed externally; reload before generating")
+            for _,child in ipairs(update.removed) do
+                assert(child.Parent==r.output,"Path changed externally; reload before generating")
+            end
+        end
         meta=Instance.new("Folder"); meta.Name="PathData"
         Persist.write(meta,{points=points,smooth=smooth,entries=savedEntries,layers=savedLayers,junctions=junctionsOn},pivot)
         recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
@@ -910,13 +961,22 @@ local function commit(allowUpload)
         end
         output.Parent=target; meta.Parent=target
         if createdTarget then target.Parent=workspace end
+        for _,update in ipairs(roadUpdates) do
+            update.applied=true
+            for _,child in ipairs(update.removed) do child.Parent=nil end
+            for _,child in ipairs(update.added) do child.Parent=update.road.output end
+        end
         History:FinishRecording(recording,Enum.FinishRecordingOperation.Commit)
         recording=nil
-        root=target; loadedPivot=target:GetPivot(); loadedMeta=meta; loadedOutput=output
-        for i,e in ipairs(savedEntries) do entries[i].source=e.source end
-        repeatLayers=savedLayers; syncLayers()
     end)
     if not success then
+        for _,update in ipairs(roadUpdates) do
+            if update.applied then
+                for _,child in ipairs(update.added) do child.Parent=update.staged end
+                for _,child in ipairs(update.removed) do child.Parent=update.road.output end
+            end
+            update.staged:Destroy()
+        end
         if output then output:Destroy() end
         if meta then meta:Destroy() end
         if overlays and not overlays.Parent then overlays:Destroy() end
@@ -930,6 +990,10 @@ local function commit(allowUpload)
         if recording then pcall(function() History:FinishRecording(recording,Enum.FinishRecordingOperation.Cancel) end) end
         error(err,0)
     end
+    for _,update in ipairs(roadUpdates) do update.staged:Destroy() end
+    root=target; loadedPivot=target:GetPivot(); loadedMeta=meta; loadedOutput=output
+    for i,e in ipairs(savedEntries) do entries[i].source=e.source end
+    repeatLayers=savedLayers; syncLayers()
     Selection:Set({root}); refreshLabel(); syncButtons(); refreshPreview()
     say(string.format("Generated %d parts | %.1f studs. Saved path can be reloaded.",count,path.length))
 end
@@ -942,10 +1006,10 @@ local function loadSelected()
     local state=Persist.read(meta,s:GetPivot())
     repeatLayers=state.layers; layerIndex=#repeatLayers>0 and 1 or 0; syncLayers()
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated")
-    remember(); points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
+    draftHistory:clear(); points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
     entries=state.entries; current=1; materialSlot=1; loadFields()
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
-    say("Loaded saved path. Generate updates only this model's output.")
+    say("Loaded saved path. Generate also refreshes junctions on connected roads.")
 end
 
 -- 04 Build -------------------------------------------------------------------
@@ -967,7 +1031,9 @@ local function previewNow(manual)
         for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
         local layerCount,partCount
         overlays,layerCount=Layers.build(path,list,Assets.count,Assets.clone,1000,true)
-        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache,junctions=junctionsFor(path,entries)})
+        local layout=junctionPlan(path,entries,false)
+        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,
+            cache=specCache,junctions=layout.junctions,junctionPads=layout.pads})
         if not active() then return end
         folder.Name="Preview"; folder.Archivable=false
         overlays.Archivable=false; overlays.Parent=folder

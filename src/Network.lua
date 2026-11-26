@@ -51,11 +51,27 @@ local function intersect(a,b,c,d)
     return t,u
 end
 
+local function horizontalBounds(path)
+    if path.junctionBounds then return path.junctionBounds end
+    local minX,maxX,minZ,maxZ=math.huge,-math.huge,math.huge,-math.huge
+    for _,p in ipairs(path.positions) do
+        minX,maxX=math.min(minX,p.X),math.max(maxX,p.X)
+        minZ,maxZ=math.min(minZ,p.Z),math.max(maxZ,p.Z)
+    end
+    local bounds={minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ}
+    path.junctionBounds=bounds
+    return bounds
+end
+
 -- Where path A meets path B in plan view (crossings and T-junction ends).
 -- maxGap limits the vertical difference (bridges over roads are not junctions).
 -- Returns a list of {da, db, position}, sorted along A, duplicates merged.
 function N.crossings(a,b,maxGap)
     maxGap=maxGap or 2
+    local x,y=horizontalBounds(a),horizontalBounds(b)
+    local tolerance=0.05
+    if x.maxX+tolerance<y.minX or y.maxX+tolerance<x.minX
+        or x.maxZ+tolerance<y.minZ or y.maxZ+tolerance<x.minZ then return {} end
     local out={}
     local pa,da,pb,db=a.positions,a.distances,b.positions,b.distances
     for i=1,#pa-1 do
@@ -74,7 +90,12 @@ function N.crossings(a,b,maxGap)
     for _,d in ipairs({0,a.length}) do
         local p=G.at(a,d)
         local dbHit,q,gap=N.project(b,p)
-        if gap<=0.05 and math.abs(p.Y-q.Y)<=maxGap then out[#out+1]={da=d,db=dbHit,position=q} end
+        if gap<=tolerance and math.abs(p.Y-q.Y)<=maxGap then out[#out+1]={da=d,db=dbHit,position=q} end
+    end
+    for _,d in ipairs({0,b.length}) do
+        local p=G.at(b,d)
+        local daHit,q,gap=N.project(a,p)
+        if gap<=tolerance and math.abs(p.Y-q.Y)<=maxGap then out[#out+1]={da=daHit,db=d,position=q} end
     end
     table.sort(out,function(x,y) return x.da<y.da end)
     local merged={}
@@ -95,14 +116,84 @@ function N.junctions(path,width,others,maxGap)
             local _,fa,_,ua=G.frame(path,c.da)
             local _,fb=G.frame(other.path,c.db)
             -- Narrow crossing angles need a longer pad; capped at 3x.
-            local sin=math.max(math.abs(fa:Cross(fb).Magnitude),1/3)
+            local sin=fa:Cross(fb).Magnitude
+            local cos=math.abs(fa:Dot(fb))
             local w=math.max(width,other.width)
-            local len=math.min(w/sin,w*3)
-            out[#out+1]={d=c.da,position=c.position,forward=fa,up=ua,size=Vector3.new(w,0,len),half=len/2}
+            local otherHalf=w/2
+            -- Enclose the second road's cut rectangle in the owner's pad frame.
+            local half=math.max(w/(2*math.max(sin,1/3)),otherHalf*cos+other.width/2*sin)
+            local padWidth=math.max(w,2*otherHalf*sin+other.width*cos)
+            out[#out+1]={d=c.da,position=c.position,forward=fa,up=ua,size=Vector3.new(padWidth,0,half*2),half=half,
+                otherD=c.db,otherHalf=otherHalf}
         end
     end
     table.sort(out,function(x,y) return x.d<y.d end)
     return out
+end
+
+-- Both roads cut to the same pad. The later road in the saved order owns it.
+-- Only the draft and its old/new neighbors need to rebuild generated road parts.
+function N.planRoads(roads,index,previous,updateNeighbors)
+    local pairsByOwner={}
+    local function pair(a,b)
+        local owner,other=math.max(a,b),math.min(a,b)
+        local high,low=roads[owner],roads[other]
+        if not high.width or not low.width then return {} end
+        pairsByOwner[owner]=pairsByOwner[owner] or {}
+        local matches=pairsByOwner[owner][other]
+        if not matches then
+            matches=N.junctions(high.path,high.width,{low})
+            pairsByOwner[owner][other]=matches
+        end
+        return matches
+    end
+    local function layout(i)
+        local result={road=roads[i],junctions={},pads={}}
+        local matches={}
+        for j=1,#roads do
+            if i~=j then
+                for _,junction in ipairs(pair(i,j)) do
+                    matches[#matches+1]={owner=math.max(i,j),junction=junction,
+                        d=i>j and junction.d or junction.otherD,half=i>j and junction.half or junction.otherHalf}
+                end
+            end
+        end
+        table.sort(matches,function(a,b) return a.d<b.d end)
+        local crossings={}
+        for _,match in ipairs(matches) do
+            local last=crossings[#crossings]
+            if not last or match.d-last.d>0.05 or (last.junction.position-match.junction.position).Magnitude>0.05 then
+                crossings[#crossings+1]=match
+            elseif match.owner>last.owner then
+                crossings[#crossings]=match
+            elseif match.owner==i and last.owner==i then
+                -- Multiple roads can meet at one point. The owner covers all their cuts.
+                local pad=table.clone(last.junction)
+                last.half=math.max(last.half,match.half)
+                pad.size=Vector3.new(math.max(pad.size.X,match.junction.size.X),0,last.half*2)
+                last.junction=pad
+            end
+        end
+        for _,crossing in ipairs(crossings) do
+            result.junctions[#result.junctions+1]={d=crossing.d,half=crossing.half}
+            if crossing.owner==i then result.pads[#result.pads+1]=crossing.junction end
+        end
+        return result
+    end
+    local draft=layout(index)
+    local updates={}
+    if updateNeighbors then
+        for i,road in ipairs(roads) do
+            if i~=index and road.width then
+                local matches=#pair(index,i)>0
+                local draftChanged=previous and (previous.path~=draft.road.path or not draft.road.width)
+                if matches or (draftChanged and #N.crossings(previous.path,road.path)>0) then
+                    updates[#updates+1]=layout(i)
+                end
+            end
+        end
+    end
+    return draft,updates
 end
 
 -- Distance ranges along the path that a road should leave to the junction pad.

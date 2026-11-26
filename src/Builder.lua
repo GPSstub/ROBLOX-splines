@@ -26,7 +26,7 @@ function B.part(parent,spec,collide,preview,style)
 end
 
 -- Builds one generator into `folder`. Returns part count and a list of preview meshes.
-function B.entry(path,entry,folder,ctx,budget)
+function B.entry(path,entry,folder,ctx,budget,meshPlan)
     local o=entry.o
     local styles=entry.styles or {}
     if P.PART_BASED[o.preset] then
@@ -56,8 +56,9 @@ function B.entry(path,entry,folder,ctx,budget)
     assert(budget>=1,"No budget left for base mesh")
     if not ctx.preview then assert(ctx.allowUpload,"Authorize mesh uploads before Generate") end
     if o.preset=="Extrude" then
-        assert(#Extrude.plan(path,o).chunks<=budget,"No budget left for base mesh")
-        local parts,meshes=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh)
+        meshPlan=meshPlan or Extrude.plan(path,o)
+        assert(#meshPlan.chunks<=budget,"No budget left for base mesh")
+        local parts,meshes=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh,meshPlan)
         for _,part in ipairs(parts) do part.Parent=folder end
         return #parts,meshes
     end
@@ -69,7 +70,10 @@ end
 
 -- Parts a mesh generator will create, checked before anything is built.
 function B.meshParts(path,o)
-    if o.preset=="Extrude" then return #Extrude.plan(path,o).chunks end
+    if o.preset=="Extrude" then
+        local plan=Extrude.plan(path,o)
+        return #plan.chunks,plan
+    end
     return 1
 end
 
@@ -97,12 +101,16 @@ function B.stack(path,entries,ctx)
         end
         -- Plan every mesh first: profile/budget errors surface before any upload.
         local meshCount=0
-        local need={}
+        local need,plans={},{}
         for _,i in ipairs(order) do
-            if P.MESH[entries[i].o.preset] then need[i]=B.meshParts(path,entries[i].o); meshCount+=need[i] end
+            if P.MESH[entries[i].o.preset] then
+                need[i],plans[i]=B.meshParts(path,entries[i].o)
+                meshCount+=need[i]
+            end
         end
         -- Junctions: roads leave a gap that one pad per crossing fills.
         local junctions=ctx.junctions or {}
+        local pads=ctx.junctionPads or junctions
         local padRoad
         if #junctions>0 then
             for _,i in ipairs(order) do
@@ -114,19 +122,20 @@ function B.stack(path,entries,ctx)
                 end
             end
         end
-        if padRoad then
+        if padRoad and #pads>0 then
             local folder=Instance.new("Folder"); folder.Name="Junctions"; folder.Parent=output
-            for _,spec in ipairs(Network.padSpecs(junctions,padRoad.o.height,padRoad.o.offset)) do
-                B.part(folder,spec,padRoad.o.collide,ctx.preview,padRoad.styles.RoadSurface)
+            for _,spec in ipairs(Network.padSpecs(pads,padRoad.o.height,padRoad.o.offset)) do
+                B.part(folder,spec,padRoad.o.collide,ctx.preview,(padRoad.styles or {}).RoadSurface)
                 count+=1
             end
         end
+        if meshCount>0 then assert(meshCount<=budget-count,"No budget left for base mesh") end
         for _,i in ipairs(order) do
             local entry=entries[i]
             local folder=Instance.new("Folder"); folder.Name=string.format("G%02d_%s",i,entry.o.preset); folder.Parent=output
             -- Keep one part of budget per remaining mesh generator.
             local reserve=P.MESH[entry.o.preset] and 0 or meshCount
-            local n,built=B.entry(path,entry,folder,ctx,budget-count-reserve)
+            local n,built=B.entry(path,entry,folder,ctx,budget-count-reserve,plans[i])
             count+=n
             if need[i] then meshCount-=need[i] end
             for _,m in ipairs(built or {}) do meshes[#meshes+1]=m end

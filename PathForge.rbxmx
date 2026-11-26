@@ -93,45 +93,58 @@ local function canContinue() return not unloading and widget.Enabled and not Run
 local pathCache=Cache.new(64)
 local specCache=Cache.new(32)
 -- Paths are cached by their points; identical drafts reuse samples and frames.
-local function pathFor()
-    local key=Cache.pointsKey(points,smooth)
+local function cachedPath(controlPoints,isSmooth)
+    local key=Cache.pointsKey(controlPoints,isSmooth)
     return pathCache:memo(key,function()
-        local path=G.path(points,smooth); path.linear=not smooth; path.key=key; return path
+        local path=G.path(controlPoints,isSmooth); path.linear=not isSmooth; path.key=key; return path
     end)
 end
--- Other saved PathForge paths in the Workspace (not the one being edited).
-local function otherPaths()
+local function pathFor() return cachedPath(points,smooth) end
+local function roadWidth(list)
+    local width
+    for _,e in ipairs(list) do
+        if e.enabled~=false and e.o.preset=="Road" then width=math.max(width or 0,e.o.width) end
+    end
+    return width
+end
+local function savedPaths(includeRoot)
     local out={}
     for _,m in ipairs(workspace:GetDescendants()) do
-        if m:IsA("Model") and m~=root and m:GetAttribute("PathForgeSchema")==1 and m:FindFirstChild("PathData") then
-            local ok,state=pcall(Persist.read,m:FindFirstChild("PathData"),m:GetPivot())
+        if m:IsA("Model") and (includeRoot or m~=root) and m:GetAttribute("PathForgeSchema")==1 and m:FindFirstChild("PathData") then
+            local meta,pivot=m:FindFirstChild("PathData"),m:GetPivot()
+            local ok,state=pcall(Persist.read,meta,pivot)
             if ok then
-                local key=Cache.pointsKey(state.points,state.smooth)
-                local okPath,path=pcall(function()
-                    return pathCache:memo(key,function()
-                        local p=G.path(state.points,state.smooth); p.linear=not state.smooth; p.key=key; return p
-                    end)
-                end)
+                local okPath,path=pcall(cachedPath,state.points,state.smooth)
                 if okPath then
-                    local width
-                    for _,e in ipairs(state.entries) do if e.enabled and e.o.preset=="Road" then width=width or e.o.width end end
-                    out[#out+1]={model=m,path=path,width=width}
+                    local output=m:FindFirstChild("Generated")
+                    out[#out+1]={model=m,path=path,entries=state.entries,meta=meta,pivot=pivot,output=output,
+                        width=state.junctions and output and roadWidth(state.entries) or nil}
                 end
             end
         end
     end
     return out
 end
-local function roadWidth(list)
-    for _,e in ipairs(list) do if e.enabled~=false and e.o.preset=="Road" then return e.o.width end end
-end
--- Road crossings with other saved road paths, when junctions are enabled.
-local function junctionsFor(path,list)
-    local width=roadWidth(list)
-    if not junctionsOn or not width then return {} end
+local function junctionPlan(path,list,updateNeighbors)
+    local width=junctionsOn and roadWidth(list) or nil
+    if not width and not (updateNeighbors and root) then return {junctions={},pads={}},{} end
+    local draft={path=path,width=width}
     local roads={}
-    for _,other in ipairs(otherPaths()) do if other.width then roads[#roads+1]=other end end
-    return Network.junctions(path,width,roads)
+    local index,previous
+    for _,saved in ipairs(savedPaths(true)) do
+        if saved.model==root then
+            if saved.width then previous=saved end
+            roads[#roads+1]=draft
+            index=#roads
+        elseif saved.width then
+            roads[#roads+1]=saved
+        end
+    end
+    if not index then
+        roads[#roads+1]=draft
+        index=#roads
+    end
+    return Network.planRoads(roads,index,previous,updateNeighbors)
 end
 local function hasMeshEntry()
     for _,e in ipairs(entries) do if e.enabled and P.MESH[e.o.preset] then return true end end
@@ -267,12 +280,13 @@ label("01   PATH / CONTROL POINTS",22,C.muted)
 local pointLabel=label("0 points",22)
 local function resetDraft()
     root=nil; loadedPivot=nil; loadedMeta=nil; loadedOutput=nil
+    draftHistory:clear()
     entries={newEntry("Rail")}; current=1; loadFields()
     repeatLayers={}; layerIndex=0; syncLayers(); resetUpload()
     points={}; selected=0; materialSlot=1; junctionsOn=true
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
 end
-button("New path / clear draft",guarded(function() editAllowed(); stopMode(); remember(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
+button("New path / clear draft",guarded(function() editAllowed(); stopMode(); resetDraft(); say("New draft. Existing generated models are unchanged.") end))
 button("Add points in viewport",guarded(function() startMode("add") end),true)
 button("Move nodes by dragging",guarded(function() startMode("move") end))
 button("Insert node after selected",guarded(function() assert(selected&gt;0,"Select a node first"); startMode("insert") end))
@@ -329,8 +343,10 @@ button("Drape points onto ground",guarded(function()
     else
         out,hit=TerrainPlan.drape(points,groundAt,offset)
     end
-    if hit&gt;0 then remember() end
-    points=out; selected=math.min(math.max(selected,1),#points); refreshLabel(); refreshPreview()
+    if hit&gt;0 then
+        remember()
+        points=out; selected=math.min(math.max(selected,1),#points); refreshLabel(); refreshPreview()
+    end
     say(string.format("Draped %d of %d points onto the ground.",hit,#points),hit==0)
 end))
 input("terrainShoulder","Terrain shoulder each side (studs)",2)
@@ -365,7 +381,7 @@ input("snapRadius","Branch snap radius (studs)",4)
 button("Snap path ends onto nearby paths",guarded(function()
     editAllowed(); assert(#points&gt;=2,"Add at least two points")
     local paths={}
-    for _,other in ipairs(otherPaths()) do paths[#paths+1]=other.path end
+    for _,other in ipairs(savedPaths(false)) do paths[#paths+1]=other.path end
     local snapped,n=Network.snapEnds(points,paths,number("snapRadius",0.1,100))
     if n&gt;0 then remember() end
     points=snapped; refreshLabel(); refreshPreview()
@@ -837,6 +853,28 @@ end))
 label("Materials, assets and recipes are stored in ServerStorage &gt; PathForgeLibrary and travel with this place. ★ marks your own materials.",58,C.muted)
 
 -- Commit / load ----------------------------------------------------------------
+local function stageRoadUpdate(layout)
+    local road=layout.road
+    local entries={}
+    for i,e in ipairs(road.entries) do
+        entries[i]=e.o.preset=="Road" and e or {o=e.o,enabled=false}
+    end
+    local removed,retained={},0
+    for _,child in ipairs(road.output:GetChildren()) do
+        if child.Name=="Junctions" or child.Name:match("^G%d%d_Road$") then
+            removed[#removed+1]=child
+        else
+            if child:IsA("BasePart") then retained+=1 end
+            for _,descendant in ipairs(child:GetDescendants()) do
+                if descendant:IsA("BasePart") then retained+=1 end
+            end
+        end
+    end
+    local staged=Builder.stack(road.path,entries,{budget=MAX_PARTS-retained,cache=specCache,
+        junctions=layout.junctions,junctionPads=layout.pads})
+    return {road=road,staged=staged,removed=removed,added=staged:GetChildren()}
+end
+
 local function commit(allowUpload)
     editAllowed(); stopMode(); storeFields()
     local path=pathFor()
@@ -854,6 +892,7 @@ local function commit(allowUpload)
     checkTarget()
     local output,meta,createdLibrary,recording,overlays,count
     local pending,snapshots,savedLayers,savedEntries={}, {}, {}, {}
+    local roadUpdates={}
     local createdTarget=false
     local success,err=pcall(function()
         local library=Storage:FindFirstChild("PathForgeAssets")
@@ -886,10 +925,22 @@ local function commit(allowUpload)
         end
         local layerCount
         overlays,layerCount=Layers.build(path,savedLayers,Assets.count,Assets.clone,MAX_PARTS,false)
-        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,budget=MAX_PARTS-layerCount,cache=specCache,junctions=junctionsFor(path,savedEntries)})
+        local layout,neighbors=junctionPlan(path,savedEntries,true)
+        for _,neighbor in ipairs(neighbors) do roadUpdates[#roadUpdates+1]=stageRoadUpdate(neighbor) end
+        output,count=Builder.stack(path,savedEntries,{preview=false,allowUpload=allowUpload,canContinue=canContinue,
+            budget=MAX_PARTS-layerCount,cache=specCache,junctions=layout.junctions,junctionPads=layout.pads})
         output.Name="Generated"
         overlays.Parent=output; count+=layerCount
         checkTarget()
+        for _,update in ipairs(roadUpdates) do
+            local r=update.road
+            assert(r.model:IsDescendantOf(workspace) and r.model:FindFirstChild("Generated")==r.output
+                and r.model:FindFirstChild("PathData")==r.meta and r.model:GetPivot()==r.pivot,
+                "Path changed externally; reload before generating")
+            for _,child in ipairs(update.removed) do
+                assert(child.Parent==r.output,"Path changed externally; reload before generating")
+            end
+        end
         meta=Instance.new("Folder"); meta.Name="PathData"
         Persist.write(meta,{points=points,smooth=smooth,entries=savedEntries,layers=savedLayers,junctions=junctionsOn},pivot)
         recording=History:TryBeginRecording("PathForgeGenerate","PathForge: Generate path")
@@ -911,13 +962,22 @@ local function commit(allowUpload)
         end
         output.Parent=target; meta.Parent=target
         if createdTarget then target.Parent=workspace end
+        for _,update in ipairs(roadUpdates) do
+            update.applied=true
+            for _,child in ipairs(update.removed) do child.Parent=nil end
+            for _,child in ipairs(update.added) do child.Parent=update.road.output end
+        end
         History:FinishRecording(recording,Enum.FinishRecordingOperation.Commit)
         recording=nil
-        root=target; loadedPivot=target:GetPivot(); loadedMeta=meta; loadedOutput=output
-        for i,e in ipairs(savedEntries) do entries[i].source=e.source end
-        repeatLayers=savedLayers; syncLayers()
     end)
     if not success then
+        for _,update in ipairs(roadUpdates) do
+            if update.applied then
+                for _,child in ipairs(update.added) do child.Parent=update.staged end
+                for _,child in ipairs(update.removed) do child.Parent=update.road.output end
+            end
+            update.staged:Destroy()
+        end
         if output then output:Destroy() end
         if meta then meta:Destroy() end
         if overlays and not overlays.Parent then overlays:Destroy() end
@@ -931,6 +991,10 @@ local function commit(allowUpload)
         if recording then pcall(function() History:FinishRecording(recording,Enum.FinishRecordingOperation.Cancel) end) end
         error(err,0)
     end
+    for _,update in ipairs(roadUpdates) do update.staged:Destroy() end
+    root=target; loadedPivot=target:GetPivot(); loadedMeta=meta; loadedOutput=output
+    for i,e in ipairs(savedEntries) do entries[i].source=e.source end
+    repeatLayers=savedLayers; syncLayers()
     Selection:Set({root}); refreshLabel(); syncButtons(); refreshPreview()
     say(string.format("Generated %d parts | %.1f studs. Saved path can be reloaded.",count,path.length))
 end
@@ -943,10 +1007,10 @@ local function loadSelected()
     local state=Persist.read(meta,s:GetPivot())
     repeatLayers=state.layers; layerIndex=#repeatLayers&gt;0 and 1 or 0; syncLayers()
     resetUpload(); root=s; loadedPivot=s:GetPivot(); loadedMeta=meta; loadedOutput=s:FindFirstChild("Generated")
-    remember(); points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
+    draftHistory:clear(); points=state.points; selected=1; smooth=state.smooth; junctionsOn=state.junctions
     entries=state.entries; current=1; materialSlot=1; loadFields()
     syncMaterials(); syncButtons(); refreshLabel(); refreshPreview()
-    say("Loaded saved path. Generate updates only this model's output.")
+    say("Loaded saved path. Generate also refreshes junctions on connected roads.")
 end
 
 -- 04 Build -------------------------------------------------------------------
@@ -968,7 +1032,9 @@ local function previewNow(manual)
         for i,l in ipairs(repeatLayers) do list[i]=table.clone(l) end
         local layerCount,partCount
         overlays,layerCount=Layers.build(path,list,Assets.count,Assets.clone,1000,true)
-        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,cache=specCache,junctions=junctionsFor(path,entries)})
+        local layout=junctionPlan(path,entries,false)
+        folder,partCount,meshes=Builder.stack(path,entries,{preview=true,canContinue=active,budget=PREVIEW_BUDGET,
+            cache=specCache,junctions=layout.junctions,junctionPads=layout.pads})
         if not active() then return end
         folder.Name="Preview"; folder.Archivable=false
         overlays.Archivable=false; overlays.Parent=folder
@@ -1340,12 +1406,13 @@ return T
 <Item class="ModuleScript" referent="RBX6"><Properties><string name="Name">MeshOutput</string><ProtectedString name="Source">-- Separate temporary preview and explicitly authorized asset output.
 local A=game:GetService("AssetService")
 local Studio=game:GetService("StudioService")
-local O={}
+local O={MAX_DIMENSION=2048}
 function O.create(mesh,anchor,o,name,source,preview,canContinue)
     local part
     local ok,result=pcall(function()
         assert(canContinue(),"Editor closed or play testing started")
         local center,size=mesh:GetCenter(),mesh:GetSize()
+        assert(math.max(size.X,size.Y,size.Z)&lt;=O.MAX_DIMENSION,"Mesh dimensions exceed 2048 studs")
         local content,id
         if preview then
             content=Content.fromObject(mesh)
@@ -1440,9 +1507,13 @@ end
 E.MAX_CHUNK_VERTICES=60000
 E.MAX_CHUNK_TRIANGLES=20000
 E.MAX_CHUNKS=8
+local function corner(a,b,combine)
+    return Vector3.new(combine(a.X,b.X),combine(a.Y,b.Y),combine(a.Z,b.Z))
+end
+
 -- Long sweeps are split into chunks that each fit one EditableMesh. Chunks share
 -- their boundary ring position, and UVs use absolute path distance, so seams line up.
-function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices)
+function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices,bounds)
     local capTris=closed and 2*(n-2) or 0
     local perRing=edges*2
     local maxRings=math.min(math.floor((maxTriangles-capTris)/perRing)+1,math.floor(maxVertices/n))
@@ -1451,17 +1522,53 @@ function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices)
     local first=1
     while first&lt;sampleCount do
         local last=math.min(sampleCount,first+maxRings-1)
+        if bounds then
+            local lo,hi=bounds[first].lo,bounds[first].hi
+            for i=first+1,last do
+                local nextLo=corner(lo,bounds[i].lo,math.min)
+                local nextHi=corner(hi,bounds[i].hi,math.max)
+                local size=nextHi-nextLo
+                -- Allow for Vector3 rounding when vertices are rebuilt in chunk-local space.
+                if math.max(size.X,size.Y,size.Z)&gt;O.MAX_DIMENSION-0.05 then
+                    last=i-1
+                    break
+                end
+                lo,hi=nextLo,nextHi
+            end
+            assert(last&gt;first,"Profile is too large for a mesh chunk; reduce its dimensions or the segment length")
+        end
         chunks[#chunks+1]={first=first,last=last}
         first=last
     end
     return chunks
 end
+
+local function ringFrame(path,d,co,si)
+    local pos,_,right,up=G.frame(path,d)
+    return pos,right*co+up*si,up*co-right*si
+end
+
 function E.plan(path,o)
     local profile,closed=E.profile(o)
     local samples=G.adaptive(path,o.step,math.rad(o.angle),o.tolerance,E.MAX_CHUNKS*2000)
     local n=#profile
     local edges=closed and n or n-1
-    local chunks=E.chunks(#samples,n,edges,closed,E.MAX_CHUNK_TRIANGLES,E.MAX_CHUNK_VERTICES)
+    local bounds={}
+    local origin=G.at(path,0)
+    local roll=math.rad(o.roll or 0)
+    local co,si=math.cos(roll),math.sin(roll)
+    for i,d in ipairs(samples) do
+        local pos,right,up=ringFrame(path,d,co,si)
+        local center=pos-origin
+        local lo,hi
+        for _,q in ipairs(profile) do
+            local vertex=center+right*q.X+up*q.Y
+            lo=lo and corner(lo,vertex,math.min) or vertex
+            hi=hi and corner(hi,vertex,math.max) or vertex
+        end
+        bounds[i]={lo=lo,hi=hi}
+    end
+    local chunks=E.chunks(#samples,n,edges,closed,E.MAX_CHUNK_TRIANGLES,E.MAX_CHUNK_VERTICES,bounds)
     assert(#chunks&lt;=E.MAX_CHUNKS,"Mesh budget exceeded; increase step/tolerance or reduce profile sides")
     local triangles=(#samples-1)*edges*2+(closed and 2*(n-2) or 0)
     local perimeter={0}
@@ -1482,8 +1589,7 @@ local function buildChunk(path,o,plan,chunk,source,preview,canContinue,style,ind
         local n=#plan.profile
         for i=chunk.first,chunk.last do
             local d=plan.samples[i]
-            local pos,_,r,u=G.frame(path,d)
-            local right,up=r*co+u*si,u*co-r*si
+            local pos,right,up=ringFrame(path,d,co,si)
             local k=i-chunk.first+1
             rings[k]={}; uvs[k]={}; normals[k]={}
             for j,q in ipairs(plan.profile) do
@@ -1558,8 +1664,8 @@ local function buildChunk(path,o,plan,chunk,source,preview,canContinue,style,ind
     return result,mesh
 end
 -- Returns a list of MeshParts (one per chunk) and, for previews, their EditableMeshes.
-function E.build(path,o,source,preview,canContinue,style)
-    local plan=E.plan(path,o)
+function E.build(path,o,source,preview,canContinue,style,plan)
+    plan=plan or E.plan(path,o)
     local parts,meshes={},{}
     local ok,err=pcall(function()
         for i,chunk in ipairs(plan.chunks) do
@@ -1760,7 +1866,7 @@ local ko={
     ["Next Generate uploads one new mesh to Roblox under your account. It may remain even after undo."]="다음 생성 때 새 메시 하나가 내 계정으로 Roblox에 업로드돼요. 실행 취소해도 남아 있을 수 있어요.",
     ["Mesh upload disabled."]="메시 업로드를 껐어요.",
     ["Guides hidden. Draft retained."]="가이드를 숨겼어요. 초안은 유지돼요.",
-    ["Loaded saved path. Generate updates only this model's output."]="저장된 경로를 불러왔어요. 생성하면 이 모델의 결과만 업데이트돼요.",
+    ["Loaded saved path. Generate also refreshes junctions on connected roads."]="저장된 경로를 불러왔어요. 생성하면 연결된 도로의 교차로도 갱신돼요.",
 
     -- Errors (plugin)
     ["Stop play testing before editing"]="편집하기 전에 플레이 테스트를 멈추세요",
@@ -1825,6 +1931,8 @@ local ko={
     ["Duplicate profile point"]="단면에 겹치는 점이 있어요",
     ["Profile must be a strictly convex ordered polygon"]="단면은 순서대로 이어진 볼록 다각형이어야 해요",
     ["Mesh budget exceeded; increase step/tolerance or reduce profile sides"]="메시 한도를 넘었어요. 구간 길이나 오차 허용치를 늘리거나 단면 분할 수를 줄이세요",
+    ["Profile is too large for a mesh chunk; reduce its dimensions or the segment length"]="메시 청크가 너무 커요. 단면 크기나 구간 길이를 줄이세요",
+    ["Mesh dimensions exceed 2048 studs"]="메시 크기가 2048 스터드 한도를 넘었어요",
     ["EditableMesh memory budget unavailable"]="EditableMesh 메모리 한도가 부족해요",
     ["EditableMesh unavailable (permissions or memory budget)"]="EditableMesh를 쓸 수 없어요 (권한 또는 메모리 한도)",
     ["Layer spacing must be 0.2–200"]="레이어 간격은 0.2~200이어야 해요",
@@ -2297,7 +2405,12 @@ function P.parts(path,o,limit,shown)
                 add("FencePost",cf*CFrame.new(0,o.height/2,0),Vector3.new(o.width*1.7,o.height,o.width*1.7),"Wood",TIMBER)
             else
                 local len=math.min(2,o.spacing*0.45,path.length)
-                if d-len/2&gt;=0 and d+len/2&lt;=path.length and not inCut(d-len/2) and not inCut(d+len/2) then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
+                local first,last=d-len/2,d+len/2
+                local crossesCut=false
+                for _,c in ipairs(cuts) do
+                    if first&lt;c[2] and last&gt;c[1] then crossesCut=true; break end
+                end
+                if first&gt;=0 and last&lt;=path.length and not crossesCut then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
             end
         end
     end
@@ -2332,11 +2445,14 @@ function P.merge(specs)
                 if tlook:Dot(look)&gt;0.99999 and t.cf.UpVector:Dot(s.cf.UpVector)&gt;0.99999
                     and offAxis.Magnitude&lt;1e-3 and math.abs(gap:Dot(tlook))&lt;=0.2 then
                     local len=(sb-ta):Dot(tlook)
-                    local center=ta+tlook*(len/2)
-                    out[idx]={name=t.name,cf=CFrame.lookAt(center,center+tlook,t.cf.UpVector),
-                        size=Vector3.new(t.size.X,t.size.Y,len),material=t.material,color=t.color}
-                    merged=true
-                    break
+                    -- Leave the next beam separate if Studio would clamp the merged part.
+                    if len&lt;=2048 then
+                        local center=ta+tlook*(len/2)
+                        out[idx]={name=t.name,cf=CFrame.lookAt(center,center+tlook,t.cf.UpVector),
+                            size=Vector3.new(t.size.X,t.size.Y,len),material=t.material,color=t.color}
+                        merged=true
+                        break
+                    end
                 end
             end
             if not merged then out[#out+1]=s; list[#list+1]=#out end
@@ -2411,7 +2527,7 @@ function B.part(parent,spec,collide,preview,style)
 end
 
 -- Builds one generator into `folder`. Returns part count and a list of preview meshes.
-function B.entry(path,entry,folder,ctx,budget)
+function B.entry(path,entry,folder,ctx,budget,meshPlan)
     local o=entry.o
     local styles=entry.styles or {}
     if P.PART_BASED[o.preset] then
@@ -2441,8 +2557,9 @@ function B.entry(path,entry,folder,ctx,budget)
     assert(budget&gt;=1,"No budget left for base mesh")
     if not ctx.preview then assert(ctx.allowUpload,"Authorize mesh uploads before Generate") end
     if o.preset=="Extrude" then
-        assert(#Extrude.plan(path,o).chunks&lt;=budget,"No budget left for base mesh")
-        local parts,meshes=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh)
+        meshPlan=meshPlan or Extrude.plan(path,o)
+        assert(#meshPlan.chunks&lt;=budget,"No budget left for base mesh")
+        local parts,meshes=Extrude.build(path,o,entry.source,ctx.preview,ctx.canContinue,styles.ExtrudedMesh,meshPlan)
         for _,part in ipairs(parts) do part.Parent=folder end
         return #parts,meshes
     end
@@ -2454,7 +2571,10 @@ end
 
 -- Parts a mesh generator will create, checked before anything is built.
 function B.meshParts(path,o)
-    if o.preset=="Extrude" then return #Extrude.plan(path,o).chunks end
+    if o.preset=="Extrude" then
+        local plan=Extrude.plan(path,o)
+        return #plan.chunks,plan
+    end
     return 1
 end
 
@@ -2482,12 +2602,16 @@ function B.stack(path,entries,ctx)
         end
         -- Plan every mesh first: profile/budget errors surface before any upload.
         local meshCount=0
-        local need={}
+        local need,plans={},{}
         for _,i in ipairs(order) do
-            if P.MESH[entries[i].o.preset] then need[i]=B.meshParts(path,entries[i].o); meshCount+=need[i] end
+            if P.MESH[entries[i].o.preset] then
+                need[i],plans[i]=B.meshParts(path,entries[i].o)
+                meshCount+=need[i]
+            end
         end
         -- Junctions: roads leave a gap that one pad per crossing fills.
         local junctions=ctx.junctions or {}
+        local pads=ctx.junctionPads or junctions
         local padRoad
         if #junctions&gt;0 then
             for _,i in ipairs(order) do
@@ -2499,19 +2623,20 @@ function B.stack(path,entries,ctx)
                 end
             end
         end
-        if padRoad then
+        if padRoad and #pads&gt;0 then
             local folder=Instance.new("Folder"); folder.Name="Junctions"; folder.Parent=output
-            for _,spec in ipairs(Network.padSpecs(junctions,padRoad.o.height,padRoad.o.offset)) do
-                B.part(folder,spec,padRoad.o.collide,ctx.preview,padRoad.styles.RoadSurface)
+            for _,spec in ipairs(Network.padSpecs(pads,padRoad.o.height,padRoad.o.offset)) do
+                B.part(folder,spec,padRoad.o.collide,ctx.preview,(padRoad.styles or {}).RoadSurface)
                 count+=1
             end
         end
+        if meshCount&gt;0 then assert(meshCount&lt;=budget-count,"No budget left for base mesh") end
         for _,i in ipairs(order) do
             local entry=entries[i]
             local folder=Instance.new("Folder"); folder.Name=string.format("G%02d_%s",i,entry.o.preset); folder.Parent=output
             -- Keep one part of budget per remaining mesh generator.
             local reserve=P.MESH[entry.o.preset] and 0 or meshCount
-            local n,built=B.entry(path,entry,folder,ctx,budget-count-reserve)
+            local n,built=B.entry(path,entry,folder,ctx,budget-count-reserve,plans[i])
             count+=n
             if need[i] then meshCount-=need[i] end
             for _,m in ipairs(built or {}) do meshes[#meshes+1]=m end
@@ -3015,11 +3140,27 @@ local function intersect(a,b,c,d)
     return t,u
 end
 
+local function horizontalBounds(path)
+    if path.junctionBounds then return path.junctionBounds end
+    local minX,maxX,minZ,maxZ=math.huge,-math.huge,math.huge,-math.huge
+    for _,p in ipairs(path.positions) do
+        minX,maxX=math.min(minX,p.X),math.max(maxX,p.X)
+        minZ,maxZ=math.min(minZ,p.Z),math.max(maxZ,p.Z)
+    end
+    local bounds={minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ}
+    path.junctionBounds=bounds
+    return bounds
+end
+
 -- Where path A meets path B in plan view (crossings and T-junction ends).
 -- maxGap limits the vertical difference (bridges over roads are not junctions).
 -- Returns a list of {da, db, position}, sorted along A, duplicates merged.
 function N.crossings(a,b,maxGap)
     maxGap=maxGap or 2
+    local x,y=horizontalBounds(a),horizontalBounds(b)
+    local tolerance=0.05
+    if x.maxX+tolerance&lt;y.minX or y.maxX+tolerance&lt;x.minX
+        or x.maxZ+tolerance&lt;y.minZ or y.maxZ+tolerance&lt;x.minZ then return {} end
     local out={}
     local pa,da,pb,db=a.positions,a.distances,b.positions,b.distances
     for i=1,#pa-1 do
@@ -3038,7 +3179,12 @@ function N.crossings(a,b,maxGap)
     for _,d in ipairs({0,a.length}) do
         local p=G.at(a,d)
         local dbHit,q,gap=N.project(b,p)
-        if gap&lt;=0.05 and math.abs(p.Y-q.Y)&lt;=maxGap then out[#out+1]={da=d,db=dbHit,position=q} end
+        if gap&lt;=tolerance and math.abs(p.Y-q.Y)&lt;=maxGap then out[#out+1]={da=d,db=dbHit,position=q} end
+    end
+    for _,d in ipairs({0,b.length}) do
+        local p=G.at(b,d)
+        local daHit,q,gap=N.project(a,p)
+        if gap&lt;=tolerance and math.abs(p.Y-q.Y)&lt;=maxGap then out[#out+1]={da=daHit,db=d,position=q} end
     end
     table.sort(out,function(x,y) return x.da&lt;y.da end)
     local merged={}
@@ -3059,14 +3205,84 @@ function N.junctions(path,width,others,maxGap)
             local _,fa,_,ua=G.frame(path,c.da)
             local _,fb=G.frame(other.path,c.db)
             -- Narrow crossing angles need a longer pad; capped at 3x.
-            local sin=math.max(math.abs(fa:Cross(fb).Magnitude),1/3)
+            local sin=fa:Cross(fb).Magnitude
+            local cos=math.abs(fa:Dot(fb))
             local w=math.max(width,other.width)
-            local len=math.min(w/sin,w*3)
-            out[#out+1]={d=c.da,position=c.position,forward=fa,up=ua,size=Vector3.new(w,0,len),half=len/2}
+            local otherHalf=w/2
+            -- Enclose the second road's cut rectangle in the owner's pad frame.
+            local half=math.max(w/(2*math.max(sin,1/3)),otherHalf*cos+other.width/2*sin)
+            local padWidth=math.max(w,2*otherHalf*sin+other.width*cos)
+            out[#out+1]={d=c.da,position=c.position,forward=fa,up=ua,size=Vector3.new(padWidth,0,half*2),half=half,
+                otherD=c.db,otherHalf=otherHalf}
         end
     end
     table.sort(out,function(x,y) return x.d&lt;y.d end)
     return out
+end
+
+-- Both roads cut to the same pad. The later road in the saved order owns it.
+-- Only the draft and its old/new neighbors need to rebuild generated road parts.
+function N.planRoads(roads,index,previous,updateNeighbors)
+    local pairsByOwner={}
+    local function pair(a,b)
+        local owner,other=math.max(a,b),math.min(a,b)
+        local high,low=roads[owner],roads[other]
+        if not high.width or not low.width then return {} end
+        pairsByOwner[owner]=pairsByOwner[owner] or {}
+        local matches=pairsByOwner[owner][other]
+        if not matches then
+            matches=N.junctions(high.path,high.width,{low})
+            pairsByOwner[owner][other]=matches
+        end
+        return matches
+    end
+    local function layout(i)
+        local result={road=roads[i],junctions={},pads={}}
+        local matches={}
+        for j=1,#roads do
+            if i~=j then
+                for _,junction in ipairs(pair(i,j)) do
+                    matches[#matches+1]={owner=math.max(i,j),junction=junction,
+                        d=i&gt;j and junction.d or junction.otherD,half=i&gt;j and junction.half or junction.otherHalf}
+                end
+            end
+        end
+        table.sort(matches,function(a,b) return a.d&lt;b.d end)
+        local crossings={}
+        for _,match in ipairs(matches) do
+            local last=crossings[#crossings]
+            if not last or match.d-last.d&gt;0.05 or (last.junction.position-match.junction.position).Magnitude&gt;0.05 then
+                crossings[#crossings+1]=match
+            elseif match.owner&gt;last.owner then
+                crossings[#crossings]=match
+            elseif match.owner==i and last.owner==i then
+                -- Multiple roads can meet at one point. The owner covers all their cuts.
+                local pad=table.clone(last.junction)
+                last.half=math.max(last.half,match.half)
+                pad.size=Vector3.new(math.max(pad.size.X,match.junction.size.X),0,last.half*2)
+                last.junction=pad
+            end
+        end
+        for _,crossing in ipairs(crossings) do
+            result.junctions[#result.junctions+1]={d=crossing.d,half=crossing.half}
+            if crossing.owner==i then result.pads[#result.pads+1]=crossing.junction end
+        end
+        return result
+    end
+    local draft=layout(index)
+    local updates={}
+    if updateNeighbors then
+        for i,road in ipairs(roads) do
+            if i~=index and road.width then
+                local matches=#pair(index,i)&gt;0
+                local draftChanged=previous and (previous.path~=draft.road.path or not draft.road.width)
+                if matches or (draftChanged and #N.crossings(previous.path,road.path)&gt;0) then
+                    updates[#updates+1]=layout(i)
+                end
+            end
+        end
+    end
+    return draft,updates
 end
 
 -- Distance ranges along the path that a road should leave to the junction pad.

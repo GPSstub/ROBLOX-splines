@@ -42,6 +42,18 @@ t.check("merge: straight wall becomes one part with the full length",function()
     t.close(specs[1].size.Z,30.12,1e-3,"length")
     t.close(specs[1].cf.Position.Z,-15,1e-3,"center")
 end)
+t.check("merge: long straight wall keeps full coverage within the part limit",function()
+    local specs=P.parts(straight(3000),opts("Wall"))
+    assert(#specs==2,"parts "..#specs)
+    local covered=0
+    for _,s in ipairs(specs) do
+        assert(s.size.Z<=2048,"oversized wall part")
+        local start,finish=-s.cf.Position.Z-s.size.Z/2,-s.cf.Position.Z+s.size.Z/2
+        assert(start<=covered+1e-4,"gap between wall parts")
+        covered=finish
+    end
+    assert(covered>=3000,"wall does not reach its last point")
+end)
 t.check("merge: an L-shaped linear path keeps one part per leg",function()
     local p=G.path({V(0,0,0),V(0,0,-20),V(20,0,-20)},false); p.linear=true
     local specs=P.parts(p,opts("Wall"))
@@ -113,6 +125,23 @@ t.check("extrude: long sweep is chunked; caps only at the ends",function()
         t.close((p1-p2).Magnitude,0,1e-6,"seam vertex "..j)
     end
 end)
+t.check("extrude: dimension limits split a low-triangle sweep and keep its seam",function()
+    local path=straight(3000)
+    local o=opts("Extrude",{step=100})
+    local plan=E.plan(path,o)
+    assert(plan.triangles<20000 and #plan.chunks==2)
+    assert(plan.chunks[1].last==plan.chunks[2].first)
+    local _,built=E.build(path,o,nil,true,always,nil,plan)
+    for _,mesh in ipairs(built) do
+        local minZ,maxZ=math.huge,-math.huge
+        for _,v in ipairs(mesh.v) do minZ=math.min(minZ,v.Z); maxZ=math.max(maxZ,v.Z) end
+        assert(maxZ-minZ<=2048,"oversized mesh chunk")
+    end
+end)
+t.check("extrude: oversized rotated custom profile fails during planning",function()
+    local o=opts("Extrude",{profile="-1000,-1000;1000,-1000;1000,1000;-1000,1000",roll=45})
+    t.fails(function() E.plan(straight(20),o) end,"Profile is too large")
+end)
 t.check("extrude: failure in a later chunk destroys earlier chunks",function()
     meshes={}
     local calls=0
@@ -128,6 +157,14 @@ t.check("builder: chunked extrude counts every chunk against the budget",functio
     local out,count,ms=B.stack(straight(400),{entry},{preview=true,canContinue=always})
     assert(count==#ms and count>=2 and #out:FindFirstChild("G01_Extrude"):GetChildren()==count)
     t.fails(function() B.stack(straight(400),{entry},{preview=true,canContinue=always,budget=1}) end,"No budget left")
+end)
+t.check("builder: combined mesh chunk budget is checked before any upload",function()
+    meshes={}
+    local entry={o=opts("Extrude",{step=100})}
+    t.fails(function()
+        B.stack(straight(3000),{entry,entry},{allowUpload=true,canContinue=always,budget=3})
+    end,"No budget left for base mesh")
+    assert(#meshes==0,"built a mesh before checking the full stack budget")
 end)
 t.check("cache: memo reuses results and evicts the oldest",function()
     local c=Cache.new(2)

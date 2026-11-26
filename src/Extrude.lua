@@ -47,9 +47,13 @@ end
 E.MAX_CHUNK_VERTICES=60000
 E.MAX_CHUNK_TRIANGLES=20000
 E.MAX_CHUNKS=8
+local function corner(a,b,combine)
+    return Vector3.new(combine(a.X,b.X),combine(a.Y,b.Y),combine(a.Z,b.Z))
+end
+
 -- Long sweeps are split into chunks that each fit one EditableMesh. Chunks share
 -- their boundary ring position, and UVs use absolute path distance, so seams line up.
-function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices)
+function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices,bounds)
     local capTris=closed and 2*(n-2) or 0
     local perRing=edges*2
     local maxRings=math.min(math.floor((maxTriangles-capTris)/perRing)+1,math.floor(maxVertices/n))
@@ -58,17 +62,53 @@ function E.chunks(sampleCount,n,edges,closed,maxTriangles,maxVertices)
     local first=1
     while first<sampleCount do
         local last=math.min(sampleCount,first+maxRings-1)
+        if bounds then
+            local lo,hi=bounds[first].lo,bounds[first].hi
+            for i=first+1,last do
+                local nextLo=corner(lo,bounds[i].lo,math.min)
+                local nextHi=corner(hi,bounds[i].hi,math.max)
+                local size=nextHi-nextLo
+                -- Allow for Vector3 rounding when vertices are rebuilt in chunk-local space.
+                if math.max(size.X,size.Y,size.Z)>O.MAX_DIMENSION-0.05 then
+                    last=i-1
+                    break
+                end
+                lo,hi=nextLo,nextHi
+            end
+            assert(last>first,"Profile is too large for a mesh chunk; reduce its dimensions or the segment length")
+        end
         chunks[#chunks+1]={first=first,last=last}
         first=last
     end
     return chunks
 end
+
+local function ringFrame(path,d,co,si)
+    local pos,_,right,up=G.frame(path,d)
+    return pos,right*co+up*si,up*co-right*si
+end
+
 function E.plan(path,o)
     local profile,closed=E.profile(o)
     local samples=G.adaptive(path,o.step,math.rad(o.angle),o.tolerance,E.MAX_CHUNKS*2000)
     local n=#profile
     local edges=closed and n or n-1
-    local chunks=E.chunks(#samples,n,edges,closed,E.MAX_CHUNK_TRIANGLES,E.MAX_CHUNK_VERTICES)
+    local bounds={}
+    local origin=G.at(path,0)
+    local roll=math.rad(o.roll or 0)
+    local co,si=math.cos(roll),math.sin(roll)
+    for i,d in ipairs(samples) do
+        local pos,right,up=ringFrame(path,d,co,si)
+        local center=pos-origin
+        local lo,hi
+        for _,q in ipairs(profile) do
+            local vertex=center+right*q.X+up*q.Y
+            lo=lo and corner(lo,vertex,math.min) or vertex
+            hi=hi and corner(hi,vertex,math.max) or vertex
+        end
+        bounds[i]={lo=lo,hi=hi}
+    end
+    local chunks=E.chunks(#samples,n,edges,closed,E.MAX_CHUNK_TRIANGLES,E.MAX_CHUNK_VERTICES,bounds)
     assert(#chunks<=E.MAX_CHUNKS,"Mesh budget exceeded; increase step/tolerance or reduce profile sides")
     local triangles=(#samples-1)*edges*2+(closed and 2*(n-2) or 0)
     local perimeter={0}
@@ -89,8 +129,7 @@ local function buildChunk(path,o,plan,chunk,source,preview,canContinue,style,ind
         local n=#plan.profile
         for i=chunk.first,chunk.last do
             local d=plan.samples[i]
-            local pos,_,r,u=G.frame(path,d)
-            local right,up=r*co+u*si,u*co-r*si
+            local pos,right,up=ringFrame(path,d,co,si)
             local k=i-chunk.first+1
             rings[k]={}; uvs[k]={}; normals[k]={}
             for j,q in ipairs(plan.profile) do
@@ -165,8 +204,8 @@ local function buildChunk(path,o,plan,chunk,source,preview,canContinue,style,ind
     return result,mesh
 end
 -- Returns a list of MeshParts (one per chunk) and, for previews, their EditableMeshes.
-function E.build(path,o,source,preview,canContinue,style)
-    local plan=E.plan(path,o)
+function E.build(path,o,source,preview,canContinue,style,plan)
+    plan=plan or E.plan(path,o)
     local parts,meshes={},{}
     local ok,err=pcall(function()
         for i,chunk in ipairs(plan.chunks) do

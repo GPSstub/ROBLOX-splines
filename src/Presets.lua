@@ -146,7 +146,12 @@ function P.parts(path,o,limit,shown)
                 add("FencePost",cf*CFrame.new(0,o.height/2,0),Vector3.new(o.width*1.7,o.height,o.width*1.7),"Wood",TIMBER)
             else
                 local len=math.min(2,o.spacing*0.45,path.length)
-                if d-len/2>=0 and d+len/2<=path.length and not inCut(d-len/2) and not inCut(d+len/2) then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
+                local first,last=d-len/2,d+len/2
+                local crossesCut=false
+                for _,c in ipairs(cuts) do
+                    if first<c[2] and last>c[1] then crossesCut=true; break end
+                end
+                if first>=0 and last<=path.length and not crossesCut then add("CenterMark",cf*CFrame.new(0,0.028,0),Vector3.new(0.15,0.035,len),"SmoothPlastic",MARK) end
             end
         end
     end
@@ -181,11 +186,14 @@ function P.merge(specs)
                 if tlook:Dot(look)>0.99999 and t.cf.UpVector:Dot(s.cf.UpVector)>0.99999
                     and offAxis.Magnitude<1e-3 and math.abs(gap:Dot(tlook))<=0.2 then
                     local len=(sb-ta):Dot(tlook)
-                    local center=ta+tlook*(len/2)
-                    out[idx]={name=t.name,cf=CFrame.lookAt(center,center+tlook,t.cf.UpVector),
-                        size=Vector3.new(t.size.X,t.size.Y,len),material=t.material,color=t.color}
-                    merged=true
-                    break
+                    -- Leave the next beam separate if Studio would clamp the merged part.
+                    if len<=2048 then
+                        local center=ta+tlook*(len/2)
+                        out[idx]={name=t.name,cf=CFrame.lookAt(center,center+tlook,t.cf.UpVector),
+                            size=Vector3.new(t.size.X,t.size.Y,len),material=t.material,color=t.color}
+                        merged=true
+                        break
+                    end
                 end
             end
             if not merged then out[#out+1]=s; list[#list+1]=#out end

@@ -129,13 +129,47 @@ local function newest()
 end
 t.check("junctions: a road crossing another road gets a pad",function()
     newRoad(V(100,0,0),V(160,0,0))
+    env.click("Add generator"); env.click("Wall")
     env.click("Generate / update saved path"); ok("road A")
+    local first=newest()
+    local firstOutput=first:FindFirstChild("Generated")
+    local wall=firstOutput:FindFirstChild("G02_Wall")
     newRoad(V(130,0,-30),V(130,0,30))
+    local before=env.recordings
     env.click("Generate / update saved path"); ok("road B")
-    local gen=newest():FindFirstChild("Generated")
+    local second=newest()
+    local gen=second:FindFirstChild("Generated")
     local pads=gen:FindFirstChild("Junctions")
     assert(pads and #pads:GetChildren()==1,"no junction pad")
-    assert(#gen:FindFirstChild("G01_Road"):GetChildren()>2,"road B was not cut")
+    assert(env.recordings==before+1 and wall and wall.Parent==firstOutput,"other generators were replaced")
+    local function surfaces(out)
+        local count=0
+        for _,child in ipairs(out:FindFirstChild("G01_Road"):GetChildren()) do
+            if child.Name=="RoadSurface" then count+=1 end
+        end
+        return count
+    end
+    assert(surfaces(firstOutput)==2 and surfaces(gen)==2,"both roads must be cut")
+    env.selection={first}
+    env.click("Load selected saved path")
+    env.click("Generate / update saved path"); ok("regenerate road A")
+    firstOutput=first:FindFirstChild("Generated")
+    assert(not firstOutput:FindFirstChild("Junctions"),"duplicate pad on road A")
+    assert(#gen:FindFirstChild("Junctions"):GetChildren()==1 and surfaces(gen)==2,"road B lost its junction")
+    env.click("Road junctions: ON")
+    local history=game:GetService("ChangeHistoryService")
+    local tryBegin=history.TryBeginRecording
+    history.TryBeginRecording=function() return nil end
+    env.click("Generate / update saved path")
+    history.TryBeginRecording=tryBegin
+    assert(env.status():find("Cannot start Studio undo recording",1,true))
+    assert(first:FindFirstChild("Generated")==firstOutput and surfaces(gen)==2 and gen:FindFirstChild("Junctions"),
+        "failed generation changed the connected road")
+    env.click("Generate / update saved path"); ok("disable existing junction")
+    assert(surfaces(first:FindFirstChild("Generated"))==1 and surfaces(gen)==1 and not gen:FindFirstChild("Junctions"),
+        "disabling the junction did not restore both roads")
+    env.click("Road junctions: OFF")
+    env.click("Generate / update saved path"); ok("restore existing junction")
 end)
 t.check("branches: snap a nearby end onto road A",function()
     newRoad(V(110,0,3),V(110,0,40))
@@ -163,6 +197,33 @@ t.check("terrain: drape onto a hill and fill/carve along the path",function()
     for _,f in ipairs(env.fills) do mats[f.material]=(mats[f.material] or 0)+1 end
     assert(mats.Air and mats.Ground and mats.Air==mats.Ground,"fills")
     env.ground=nil
+end)
+t.check("terrain: no ground hit preserves the original draft and its undo history",function()
+    newRoad(V(300,0,0),V(360,0,0))
+    env.ground=function() return nil end
+    env.setField("Drape resample spacing (0 = keep points)",10)
+    env.click("Drape points onto ground")
+    local s=env.status(); assert(s:find("^Draped 0 of 2"),s)
+    env.find("2 points   |   Node 2   |   New path","TextLabel")
+    env.click("Undo draft edit")
+    env.find("1 points   |   Node 1   |   New path","TextLabel")
+    env.ground=nil
+end)
+t.check("ux: new and loaded paths cannot undo into a different draft",function()
+    newRoad(V(300,0,100),V(360,0,100))
+    env.click("Generate / update saved path"); ok("save undo test path")
+    local saved=newest()
+    env.click("New path / clear draft")
+    env.click("Undo draft edit")
+    env.find("0 points   |   Node 0   |   New path","TextLabel")
+    newRoad(V(500,0,100),V(560,0,100))
+    env.selection={saved}
+    env.click("Load selected saved path")
+    env.click("Undo draft edit")
+    env.click("Redo draft edit")
+    env.click("Generate / update saved path"); ok("regenerate undo test path")
+    local state=require('Persist').read(saved:FindFirstChild("PathData"),saved:GetPivot())
+    assert(state.points[1]==V(300,0,100),"saved path geometry was overwritten")
 end)
 local function scatterBox()
     for _,c in ipairs(env.workspace:GetChildren()) do if c:GetAttribute("PathForgeScatter")==1 then return c end end
