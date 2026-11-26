@@ -16,3 +16,9 @@ checklist in TESTING.md. Studio checks happen every version, not only at v1.0.
 | v1.0 | Stabilization, real-use validation, release | code done; Studio validation and tag pending |
 
 No release dates are committed. Studio testing is a release blocker.
+
+## Post-v1.0 stabilization
+- [x] Terrain preview/confirmation and work limits
+- [x] Recipe source snapshots and scatter part budget
+- [ ] Real Studio acceptance and destructive-edit rollback checks
+- [ ] Junction repair after external deletion, network spatial indexing, upload preflight and reuse

@@ -167,15 +167,27 @@ function L.saveRecipe(storage,name,entries,layers,smooth)
     name=L.validName(name)
     local text,refs=L.encodeRecipe(entries,layers,smooth)
     local folder=L.folder(storage,"Recipes",true)
-    assert(#folder:GetChildren()<L.MAX_ITEMS,"Library is full (200 items)")
     local old=folder:FindFirstChild(name)
-    if old then old:Destroy() end
+    assert(old or #folder:GetChildren()<L.MAX_ITEMS,"Library is full (200 items)")
     local recipe=Instance.new("Configuration"); recipe.Name=name
-    local v=Instance.new("StringValue"); v.Name="Data"; v.Value=text; v.Parent=recipe
-    for key,inst in pairs(refs) do
-        local ref=Instance.new("ObjectValue"); ref.Name=key; ref.Value=inst; ref.Parent=recipe
-    end
-    recipe.Parent=folder
+    local ok,err=pcall(function()
+        local v=Instance.new("StringValue"); v.Name="Data"; v.Value=text; v.Parent=recipe
+        local snapshots=Instance.new("Folder"); snapshots.Name="Sources"; snapshots.Parent=recipe
+        local clones={}
+        local count=0
+        for key,inst in pairs(refs) do
+            local c=clones[inst]
+            if not c then
+                count+=Assets.count(inst)
+                assert(count<=6500,"Recipe source part budget exceeded (6500)")
+                c=Assets.clone(inst); c.Parent=snapshots; clones[inst]=c
+            end
+            local ref=Instance.new("ObjectValue"); ref.Name=key; ref.Value=c; ref.Parent=recipe
+        end
+        recipe.Parent=folder
+    end)
+    if not ok then recipe:Destroy(); error(err,0) end
+    if old then old:Destroy() end
     return recipe
 end
 function L.recipes(storage)

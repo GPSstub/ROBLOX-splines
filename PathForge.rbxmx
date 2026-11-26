@@ -57,6 +57,11 @@ local materialSlot=1
 local preview=nil
 local draftGuides,draftNodes={},{}
 local previewFolder,previewMeshes=nil,{}
+local terrainState={}
+local function clearTerrainPreview()
+    terrainState.pending=nil
+    if terrainState.folder then terrainState.folder:Destroy(); terrainState.folder=nil end
+end
 local liveEnabled,previewBusy,previewRevision,previewDue=false,false,0,nil
 local mode,dragging,lastMove=nil,false,0
 local axisHandles,axisStart,axisNode
@@ -165,6 +170,7 @@ local function setLive(enabled)
     if liveButton then liveButton.Text=T(enabled and "Auto preview: ON" or "Auto preview: OFF") end
 end
 local function clearMeshPreview()
+    clearTerrainPreview()
     previewRevision+=1
     if liveEnabled then previewDue=os.clock()+0.35 end
     if previewFolder then previewFolder:Destroy(); previewFolder=nil end
@@ -355,6 +361,7 @@ input("terrainClear","Clear height above path (studs)",12)
 local terrainMaterial="Ground"
 local terrainMaterialButton=button("Fill material: Ground",function()
     terrainMaterial=TerrainPlan.MATERIALS[(table.find(TerrainPlan.MATERIALS,terrainMaterial) or 1)%#TerrainPlan.MATERIALS+1]
+    clearTerrainPreview()
 end)
 terrainMaterialButton.Activated:Connect(function() terrainMaterialButton.Text=T("Fill material: "..terrainMaterial) end)
 button("Fill and carve terrain along path",guarded(function()
@@ -366,6 +373,30 @@ button("Fill and carve terrain along path",guarded(function()
     local path=pathFor()
     local plan=TerrainPlan.plan(path,{width=width or 4,shoulder=number("terrainShoulder",0,100),depth=number("terrainDepth",0,200),
         clear=number("terrainClear",0,200),step=4,offset=0})
+    TerrainPlan.checkBudget(plan)
+    local signature=path.key.."|"..tostring(width or 4).."|"..fields.terrainShoulder.Text.."|"..fields.terrainDepth.Text.."|"..fields.terrainClear.Text.."|"..terrainMaterial
+    if terrainState.pending and terrainState.pending.key~=signature then clearTerrainPreview() end
+    if not terrainState.pending then
+        setLive(false); stopMode(); clearMeshPreview()
+        if not preview then refreshPreview() end
+        terrainState.folder=Instance.new("Folder"); terrainState.folder.Name="TerrainPreview"; terrainState.folder.Archivable=false; terrainState.folder.Parent=preview
+        local ok,err=pcall(function()
+            for _,b in ipairs(plan.fill) do
+                local part=guidePart(terrainState.folder,"Fill",b.cf,b.size,Color3.fromRGB(60,180,100))
+                part.Transparency=0.7
+            end
+            for _,b in ipairs(plan.carve) do
+                local part=guidePart(terrainState.folder,"Carve",b.cf,b.size,Color3.fromRGB(230,80,70))
+                part.Transparency=0.7
+            end
+        end)
+        if not ok then clearTerrainPreview(); error(err,0) end
+        terrainState.pending={key=signature,plan=plan}
+        say("Terrain preview: green fills, red carves. Click again to apply, or cancel.")
+        return
+    end
+    plan=terrainState.pending.plan
+    clearTerrainPreview()
     local rec=History:TryBeginRecording("PathForgeTerrain","PathForge: Terrain along path")
     assert(rec,"Cannot start Studio undo recording. Try again.")
     local ok,err=pcall(function()
@@ -376,6 +407,7 @@ button("Fill and carve terrain along path",guarded(function()
     if not ok then error(err,0) end
     say(string.format("Terrain: %d fill and %d carve blocks. Undo reverts it in one step.",#plan.fill,#plan.carve))
 end))
+button("Cancel terrain preview",function() clearTerrainPreview(); say("Terrain preview cancelled.") end)
 label("01A  BRANCHES",22,C.muted)
 input("snapRadius","Branch snap radius (studs)",4)
 button("Snap path ends onto nearby paths",guarded(function()
@@ -671,17 +703,24 @@ local function scatterPositions(box)
 end
 local function place(box,items,seed)
     assert(#scatterPool&gt;0,"Pick scatter assets first")
-    local rng=Scatter.rng(seed)
-    for _,it in ipairs(items) do
-        local p=it.position
-        local y=groundAt(p.X,p.Z)
-        if y then p=Vector3.new(p.X,y,p.Z) end
-        local c=Assets.clone(scatterPool[Scatter.pick(rng,#scatterPool)])
-        if c:IsA("Model") then c:ScaleTo(it.scale) else c.Size*=it.scale end
-        c:PivotTo(CFrame.new(p)*CFrame.Angles(0,math.rad(it.yaw),0))
-        Assets.configure(c,true,false)
-        c.Parent=box
-    end
+    local count=0
+    for _,d in ipairs(box:GetDescendants()) do if d:IsA("BasePart") then count+=1 end end
+    local sources=Scatter.sources(items,scatterPool,seed,Assets.count,count)
+    local stage=Instance.new("Folder")
+    local ok,err=pcall(function()
+        for i,it in ipairs(items) do
+            local p=it.position
+            local y=groundAt(p.X,p.Z)
+            if y then p=Vector3.new(p.X,y,p.Z) end
+            local c=Assets.clone(sources[i]); c.Parent=stage
+            if c:IsA("Model") then c:ScaleTo(it.scale) else c.Size*=it.scale end
+            c:PivotTo(CFrame.new(p)*CFrame.Angles(0,math.rad(it.yaw),0))
+            Assets.configure(c,true,false)
+        end
+    end)
+    if not ok then stage:Destroy(); error(err,0) end
+    for _,c in ipairs(stage:GetChildren()) do c.Parent=box end
+    stage:Destroy()
 end
 button("Use selected models as scatter assets",guarded(function()
     editAllowed()
@@ -838,7 +877,14 @@ recipeLabel=label("No saved recipes",24)
 row({{"Previous recipe",function() step("recipe",-1) end},{"Next recipe",function() step("recipe",1) end}})
 button("Save current setup as recipe",guarded(function()
     storeFields()
-    recorded("PathForge: Save recipe",function() Library.saveRecipe(Storage,fields.libName.Text,entries,repeatLayers,smooth) end)
+    local name=Library.validName(fields.libName.Text)
+    local folder=Library.folder(Storage,"Recipes",false)
+    local oldRecipe=folder and folder:FindFirstChild(name)
+    if oldRecipe then
+        for _,e in ipairs(entries) do assert(not e.source or not e.source:IsDescendantOf(oldRecipe),"Generate the loaded recipe before overwriting it") end
+        for _,l in ipairs(repeatLayers) do assert(not l.source or not l.source:IsDescendantOf(oldRecipe),"Generate the loaded recipe before overwriting it") end
+    end
+    recorded("PathForge: Save recipe",function() Library.saveRecipe(Storage,name,entries,repeatLayers,smooth) end)
     syncLibrary(); say("Saved to the library.")
 end),true)
 button("Load recipe into draft",guarded(function()
@@ -1765,6 +1811,14 @@ return L
 local Locale={}
 
 local ko={
+    ["Recipe source part budget exceeded (6500)"]="레시피 소스 파트 한도(6500개)를 넘었어요",
+    ["Generate the loaded recipe before overwriting it"]="덮어쓰기 전에 불러온 레시피를 생성하세요",
+    ["Scatter part budget exceeded (6500)"]="흩뿌리기 파트 한도(6500개)를 넘었어요",
+    ["Terrain preview: green fills, red carves. Click again to apply, or cancel."]="지형 미리보기: 초록색은 채우기, 빨간색은 깎기예요. 다시 클릭해 적용하거나 취소하세요.",
+    ["Cancel terrain preview"]="지형 미리보기 취소",
+    ["Terrain preview cancelled."]="지형 미리보기를 취소했어요.",
+    ["Terrain edit exceeds 400 blocks; split the path"]="지형 편집이 400개 블록을 넘었어요. 경로를 나누세요",
+    ["Terrain edit volume too large; split the path"]="지형 편집 부피가 너무 커요. 경로를 나누세요",
     -- Window / tabs
     ["PathForge | Level Toolkit"]="PathForge | 레벨 툴킷",
     ["Procedural path and asset editor"]="절차적 경로 및 에셋 편집기",
@@ -3058,15 +3112,27 @@ function L.saveRecipe(storage,name,entries,layers,smooth)
     name=L.validName(name)
     local text,refs=L.encodeRecipe(entries,layers,smooth)
     local folder=L.folder(storage,"Recipes",true)
-    assert(#folder:GetChildren()&lt;L.MAX_ITEMS,"Library is full (200 items)")
     local old=folder:FindFirstChild(name)
-    if old then old:Destroy() end
+    assert(old or #folder:GetChildren()&lt;L.MAX_ITEMS,"Library is full (200 items)")
     local recipe=Instance.new("Configuration"); recipe.Name=name
-    local v=Instance.new("StringValue"); v.Name="Data"; v.Value=text; v.Parent=recipe
-    for key,inst in pairs(refs) do
-        local ref=Instance.new("ObjectValue"); ref.Name=key; ref.Value=inst; ref.Parent=recipe
-    end
-    recipe.Parent=folder
+    local ok,err=pcall(function()
+        local v=Instance.new("StringValue"); v.Name="Data"; v.Value=text; v.Parent=recipe
+        local snapshots=Instance.new("Folder"); snapshots.Name="Sources"; snapshots.Parent=recipe
+        local clones={}
+        local count=0
+        for key,inst in pairs(refs) do
+            local c=clones[inst]
+            if not c then
+                count+=Assets.count(inst)
+                assert(count&lt;=6500,"Recipe source part budget exceeded (6500)")
+                c=Assets.clone(inst); c.Parent=snapshots; clones[inst]=c
+            end
+            local ref=Instance.new("ObjectValue"); ref.Name=key; ref.Value=c; ref.Parent=recipe
+        end
+        recipe.Parent=folder
+    end)
+    if not ok then recipe:Destroy(); error(err,0) end
+    if old then old:Destroy() end
     return recipe
 end
 function L.recipes(storage)
@@ -3312,7 +3378,7 @@ return N
 -- fill (support under the path) and carve (clear space above it).
 -- Pure planning; the plugin applies blocks with Terrain:FillBlock.
 local G=require(script.Parent.Geometry)
-local T={MAX_BLOCKS=2000}
+local T={MAX_BLOCKS=2000,MAX_PREVIEW_BLOCKS=400,MAX_VOLUME=64000000}
 T.MATERIALS={"Ground","Grass","Rock","Asphalt","Sand","Mud","Slate","Concrete"}
 
 -- heightAt(x, z) -&gt; ground Y or nil. Points without ground keep their height.
@@ -3333,7 +3399,16 @@ function T.resample(path,spacing,heightAt,offset,maxPoints)
     assert(n+1&lt;=maxPoints,"Too many points: increase resample spacing")
     local pts={}
     for i=0,n do pts[#pts+1]=G.at(path,path.length*i/n) end
-    return T.drape(pts,heightAt,offset)
+    function T.checkBudget(plan)
+    assert(#plan.fill+#plan.carve&lt;=T.MAX_PREVIEW_BLOCKS,"Terrain edit exceeds 400 blocks; split the path")
+    local volume=0
+    for _,group in ipairs({plan.fill,plan.carve}) do
+        for _,b in ipairs(group) do volume+=b.size.X*b.size.Y*b.size.Z end
+    end
+    assert(volume&lt;=T.MAX_VOLUME,"Terrain edit volume too large; split the path")
+    return volume
+end
+return T.drape(pts,heightAt,offset)
 end
 
 -- Plans terrain blocks along the path. o = {width, shoulder, depth, clear, step, offset, sink}.
@@ -3365,7 +3440,7 @@ return T
 <Item class="ModuleScript" referent="RBX21"><Properties><string name="Name">Scatter</string><ProtectedString name="Source">-- Scatter: random but repeatable placement of assets in a band along a path,
 -- and brush painting/erasing in a circle. Pure planning; the plugin places clones.
 local G=require(script.Parent.Geometry)
-local S={MAX_COUNT=2000}
+local S={MAX_COUNT=2000,MAX_PARTS=6500}
 
 -- Deterministic generator (same seed -&gt; same layout in Studio and tests).
 function S.rng(seed)
@@ -3473,6 +3548,23 @@ end
 
 -- Picks one of n assets.
 function S.pick(rng,n) return math.min(n,math.floor(rng()*n)+1) end
+-- Exact deterministic source choices; count all existing BaseParts before cloning.
+function S.sources(items,pool,seed,countParts,existingParts)
+    assert(#pool&gt;0,"Pick scatter assets first")
+    local counts={}
+    local rng=S.rng(seed)
+    local total=existingParts
+    assert(total&lt;=S.MAX_PARTS,"Scatter part budget exceeded (6500)")
+    local sources={}
+    for i=1,#items do
+        local a=pool[S.pick(rng,#pool)]
+        if not counts[a] then counts[a]=countParts(a) end
+        total+=counts[a]
+        assert(total&lt;=S.MAX_PARTS,"Scatter part budget exceeded (6500)")
+        sources[i]=a
+    end
+    return sources,total
+end
 return S
 </ProtectedString></Properties></Item>
 <Item class="ModuleScript" referent="RBX22"><Properties><string name="Name">DraftHistory</string><ProtectedString name="Source">-- Undo/redo for draft point edits (separate from Studio's undo, which only

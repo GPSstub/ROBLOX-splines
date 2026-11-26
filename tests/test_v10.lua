@@ -71,4 +71,12 @@ t.check("erase: picks positions inside the radius only",function()
     local idx=S.erase({V(0,0,0),V(3,5,0),V(10,0,0)},V(0,0,0),4)
     assert(#idx==2 and idx[1]==1 and idx[2]==2)
 end)
+t.check("scatter: exact source choices respect total part budget",function()
+    local items={{},{},{}}
+    local pool={{count=2},{count=3}}
+    local function count(a) return a.count end
+    local picks,total=S.sources(items,pool,7,count,0)
+    assert(#picks==3 and total==picks[1].count+picks[2].count+picks[3].count)
+    t.fails(function() S.sources(items,pool,7,count,6499) end,"Scatter part budget exceeded")
+end)
 return t.finish()

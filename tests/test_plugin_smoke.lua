@@ -191,6 +191,13 @@ t.check("terrain: drape onto a hill and fill/carve along the path",function()
     env.setField("Drape resample spacing (0 = keep points)",10)
     env.click("Drape points onto ground")
     local s=env.status(); assert(s:find("Draped 7 of 7",1,true),s)
+    local before=#env.fills
+    env.click("Fill and carve terrain along path")
+    assert(#env.fills==before and env.status():find("^Terrain preview:"),"preview must not edit terrain")
+    env.click("Cancel terrain preview")
+    assert(#env.fills==before)
+    env.click("Fill and carve terrain along path")
+    assert(#env.fills==before)
     env.click("Fill and carve terrain along path")
     s=env.status(); assert(s:find("^Terrain: "),s)
     local mats={}

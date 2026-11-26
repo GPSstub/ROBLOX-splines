@@ -2,7 +2,7 @@
 -- fill (support under the path) and carve (clear space above it).
 -- Pure planning; the plugin applies blocks with Terrain:FillBlock.
 local G=require(script.Parent.Geometry)
-local T={MAX_BLOCKS=2000}
+local T={MAX_BLOCKS=2000,MAX_PREVIEW_BLOCKS=400,MAX_VOLUME=64000000}
 T.MATERIALS={"Ground","Grass","Rock","Asphalt","Sand","Mud","Slate","Concrete"}
 
 -- heightAt(x, z) -> ground Y or nil. Points without ground keep their height.
@@ -23,7 +23,16 @@ function T.resample(path,spacing,heightAt,offset,maxPoints)
     assert(n+1<=maxPoints,"Too many points: increase resample spacing")
     local pts={}
     for i=0,n do pts[#pts+1]=G.at(path,path.length*i/n) end
-    return T.drape(pts,heightAt,offset)
+    function T.checkBudget(plan)
+    assert(#plan.fill+#plan.carve<=T.MAX_PREVIEW_BLOCKS,"Terrain edit exceeds 400 blocks; split the path")
+    local volume=0
+    for _,group in ipairs({plan.fill,plan.carve}) do
+        for _,b in ipairs(group) do volume+=b.size.X*b.size.Y*b.size.Z end
+    end
+    assert(volume<=T.MAX_VOLUME,"Terrain edit volume too large; split the path")
+    return volume
+end
+return T.drape(pts,heightAt,offset)
 end
 
 -- Plans terrain blocks along the path. o = {width, shoulder, depth, clear, step, offset, sink}.

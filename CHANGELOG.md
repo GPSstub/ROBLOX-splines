@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — safety hardening
+- Terrain fill/carve preview, confirmation, cancel and work limits.
+- Recipe-owned, deduplicated source snapshots; stage before replacing.
+- Shared scatter/brush BasePart budget and staged placement batches.
+- Added regression tests; real Studio acceptance remains pending.
+
+
 ## v1.0 — 2026-11-25
 ### Added
 - Stability tests (`tests/test_v10_stability.lua`): about 300 randomized paths with fixed seeds through geometry, every generator, Extrude planning, crossings and scatter (no NaN, only clear user-facing errors), a 128-point worst case, and loading v0.1, v0.2 and v0.5 saves, including out-of-range old values.

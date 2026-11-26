@@ -3,6 +3,14 @@
 local Locale={}
 
 local ko={
+    ["Recipe source part budget exceeded (6500)"]="레시피 소스 파트 한도(6500개)를 넘었어요",
+    ["Generate the loaded recipe before overwriting it"]="덮어쓰기 전에 불러온 레시피를 생성하세요",
+    ["Scatter part budget exceeded (6500)"]="흩뿌리기 파트 한도(6500개)를 넘었어요",
+    ["Terrain preview: green fills, red carves. Click again to apply, or cancel."]="지형 미리보기: 초록색은 채우기, 빨간색은 깎기예요. 다시 클릭해 적용하거나 취소하세요.",
+    ["Cancel terrain preview"]="지형 미리보기 취소",
+    ["Terrain preview cancelled."]="지형 미리보기를 취소했어요.",
+    ["Terrain edit exceeds 400 blocks; split the path"]="지형 편집이 400개 블록을 넘었어요. 경로를 나누세요",
+    ["Terrain edit volume too large; split the path"]="지형 편집 부피가 너무 커요. 경로를 나누세요",
     -- Window / tabs
     ["PathForge | Level Toolkit"]="PathForge | 레벨 툴킷",
     ["Procedural path and asset editor"]="절차적 경로 및 에셋 편집기",
