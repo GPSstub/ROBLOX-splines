@@ -11,9 +11,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 
 def luau_to_lua(code: str) -> str:
-    # x+=expr  ->  x=x+(expr); expr ends at ';', a newline, or a trailing ' end'
-    return re.sub(r"([A-Za-z_][\w\.]*)\s*\+=\s*(.+?)(?=;|\n|\s+end\b)",
-                  lambda m: f"{m[1]}={m[1]}+({m[2]})", code)
+    # x+=expr  ->  x=x+(expr) (also -=, *=, /=); expr ends at ';', a newline, or a trailing ' end'
+    return re.sub(r"([A-Za-z_][\w\.]*)\s*([-+*/])=\s*(.+?)(?=;|\n|\s+(?:end|else|elseif)\b)",
+                  lambda m: f"{m[1]}={m[1]}{m[2]}({m[3]})", code)
 
 def main(extra=()):
     lua = lupa.LuaRuntime(unpack_returned_tuples=True)
@@ -36,10 +36,13 @@ def main(extra=()):
     for f in SRC.glob("*.lua"):
         name = f.stem
         if name.endswith(".server"):
+            lua.globals().PLUGIN_SOURCE = luau_to_lua(f.read_text(encoding="utf-8"))
             continue
         sources[name] = loader(name, luau_to_lua(f.read_text(encoding="utf-8")))
+    sources["studio_mock"] = loader("studio_mock", luau_to_lua((ROOT / "tests" / "studio_mock.lua").read_text(encoding="utf-8")))
+    sources["harness"] = loader("harness", (ROOT / "tests" / "harness.lua").read_text(encoding="utf-8"))
     failures = 0
-    for label, chunk in [("SelfTest.run (15 Studio self-tests)", "return require('SelfTest').run()"), *extra]:
+    for label, chunk in [("SelfTest.run (Studio self-tests)", "return require('SelfTest').run()"), *extra]:
         lua.execute("MODULES = {}")  # fresh module state per suite
         try:
             result = lua.execute(chunk)
@@ -65,7 +68,7 @@ def main(extra=()):
 
 if __name__ == "__main__":
     extra = []
-    extra_file = ROOT / "tests" / "regression.lua"
-    if extra_file.exists():
-        extra.append(("tests/regression.lua", extra_file.read_text(encoding="utf-8")))
+    for f in [ROOT / "tests" / "regression.lua", *sorted((ROOT / "tests").glob("test_*.lua"))]:
+        if f.exists():
+            extra.append((f"tests/{f.name}", luau_to_lua(f.read_text(encoding="utf-8"))))
     sys.exit(1 if main(extra) else 0)

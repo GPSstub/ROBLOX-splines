@@ -1,6 +1,74 @@
 # Changelog
 
-## Unreleased
+## v1.0 — 2026-11-25
+### Added
+- Stability tests (`tests/test_v10_stability.lua`): about 300 randomized paths with fixed seeds through geometry, every generator, Extrude planning, crossings and scatter (no NaN, only clear user-facing errors), a 128-point worst case, and loading v0.1, v0.2 and v0.5 saves, including out-of-range old values.
+- Release workflow: pushing a `v*` tag runs the tests and publishes `PathForge.rbxmx` as a GitHub release with `RELEASE_NOTES.md`.
+- README rewritten for v1.0 (install, quick start in Korean and English, features, uploads, limits, development).
+
+### Fixed
+- Closing the plugin during a brush stroke now finishes the stroke's undo recording.
+
+## v0.11 — 2026-11-25
+### Added
+- Draft undo/redo for point edits (add, insert, drag, axis move, XYZ, delete, drape, snap, new path, load), separate from Studio's undo, 50 steps.
+- Plugin actions for keyboard shortcuts (bind them in File > Advanced > Customize Shortcuts): add points, move nodes, stop editing, delete node, undo/redo draft, preview, generate.
+- Number fields turn red with an outline while their value is out of range.
+- The panel follows Studio's light/dark theme colors.
+- "Generating…" status while a build (and any upload) runs.
+- Tests: `tests/test_v11.lua` (undo history, field checks, theme, and the whole plugin loading and generating with Studio set to Korean).
+
+## v0.10 — 2026-11-25
+### Added
+- Scatter (Layers tab): pick one or more selected models as scatter assets, then **Scatter along path** places them randomly in a band on both sides of the path, keeping a clear zone over the path center, a minimum distance between assets, and a random scale range and rotation. A seed makes the layout repeatable. Assets are dropped onto the ground below.
+- Brush: **Brush: paint** and **Brush: erase** viewport modes paint or remove scatter assets in a circle while dragging. Each stroke is one undo step.
+- All scattered/painted assets go into one `PathForge Scatter` model; existing assets are respected by the minimum distance.
+- `Scatter` module and `tests/test_v10.lua`; smoke test scatters, paints and erases.
+
+## v0.9b — 2026-11-25
+### Added
+- Terrain section in the Path tab:
+  - **Drape points onto ground** puts control points on the surface below them (plus a height offset). With a resample spacing, the path is re-sampled every N studs first so it follows hills between the original points.
+  - **Fill and carve terrain along path** fills terrain under the path (to a depth, with shoulders on each side, top kept 0.5 studs below the path so voxels don't poke through roads) and clears terrain above it (to a clear height). Blocks follow the path's slope. One undo step. Fill material is selectable.
+- `Terrain` module and `tests/test_v09b.lua`; the smoke test drapes a path over a hill and checks fill/carve calls.
+
+## v0.9a — 2026-11-25
+### Added
+- Branches: **Snap path ends onto nearby paths** moves the first/last point of the draft onto the nearest saved PathForge path within a radius, so a side road starts exactly on the main road.
+- Road junctions: when a path with a Road generator crosses (or ends on) another saved road, the road surface is cut back and one asphalt junction pad fills the crossing. The pad grows for shallow crossing angles (capped at 3× width). Paths more than 2 studs apart vertically (bridges) are ignored. Toggle in the Build tab; saved per path. Older saves keep junctions off so their output does not change.
+- `Network` module (projection, snapping, crossings, pads) and `tests/test_v09a.lua`; smoke test builds two crossing roads and a snapped branch.
+
+## v0.8 — 2026-11-25
+### Added
+- Library tab, stored in `ServerStorage > PathForgeLibrary` so it saves and travels with the place:
+  - 21 built-in material presets (asphalt, concrete, brick, wood, rusty metal, glass, painted lines…) applied to any material slot, plus your own saved materials.
+  - Asset library: add a selected model (scripts and joints stripped) and use it as a Custom asset or repeat layer. Older generation snapshots in `PathForgeAssets` are listed too.
+  - Recipes: save the whole generator stack, material slots and layer settings (without points) under a name and load it onto any new path.
+- Every library change is one Studio undo step.
+
+## v0.7 — 2026-11-25
+### Added
+- Extrude chunking: long sweeps are split into up to 8 meshes (each within 60,000 vertices / 20,000 triangles). Chunk seams share exact positions and UVs; caps only at the two ends.
+- `Cache` module: drafts reuse computed paths, and Part-based generators reuse their part list when the path and settings did not change (faster preview while editing other generators).
+
+### Changed
+- Straight stretches of beams (rail feet/heads, road surface and lines, walls, fence rails) are merged into one long part. A straight 30-stud wall is now 1 part instead of 15.
+- Pipe joint balls are only placed where the pipe bends.
+- Every mesh generator is planned before anything is built, so profile and budget errors appear before any upload.
+
+## v0.6 — 2026-11-25
+### Added
+- Generator stack: up to 8 generators share one path, each with its own type, options, material slots, source and on/off switch. Several mesh generators (e.g. two Extrude profiles) can be built together.
+- Part-based generators (Rail, Road, Wall, Fence, Pipe) now preview real geometry instead of guides only.
+- Saved data format 2 (`PathData/Generators`); v0.1–v0.5 saves still load as a one-generator stack.
+- Module tests (`tests/test_v06.lua`) and a fake-Studio smoke test that loads `Plugin.server.lua` and clicks through add points, preview, generate, load, update and play-test cleanup.
+
+### Changed
+- `Plugin.server.lua` split into `Presets`, `Builder`, `Persist`, `Assets`, `Ui`, `Json` and `Version` modules (generator, build and save logic moved out; the script is now UI wiring only).
+- Mesh upload authorization covers every enabled mesh generator of the next Generate. Part-based generators are built before any upload.
+- Material slot picker only lists slots the current generator uses.
+
+## v0.5.1 — 2026-11-25
 ### Added
 - Korean UI translation (`src/Locale.lua`), chosen automatically from Studio's language; English remains the default.
 - `tests/run.py`: runs the geometry self-tests, regression checks, translation coverage and package parity outside Studio; GitHub Actions workflow.

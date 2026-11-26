@@ -28,6 +28,45 @@
     },
     "Locale": {
       "$path": "src/Locale.lua"
+    },
+    "Version": {
+      "$path": "src/Version.lua"
+    },
+    "Json": {
+      "$path": "src/Json.lua"
+    },
+    "Presets": {
+      "$path": "src/Presets.lua"
+    },
+    "Assets": {
+      "$path": "src/Assets.lua"
+    },
+    "Builder": {
+      "$path": "src/Builder.lua"
+    },
+    "Persist": {
+      "$path": "src/Persist.lua"
+    },
+    "Ui": {
+      "$path": "src/Ui.lua"
+    },
+    "Cache": {
+      "$path": "src/Cache.lua"
+    },
+    "Library": {
+      "$path": "src/Library.lua"
+    },
+    "Network": {
+      "$path": "src/Network.lua"
+    },
+    "Terrain": {
+      "$path": "src/Terrain.lua"
+    },
+    "Scatter": {
+      "$path": "src/Scatter.lua"
+    },
+    "DraftHistory": {
+      "$path": "src/DraftHistory.lua"
     }
   }
 }

@@ -27,3 +27,4 @@ globals:
   DockWidgetPluginGuiInfo: {any: true}
   task: {any: true}
   warn: {args: [{type: "..."}]}
+  settings: {args: []}

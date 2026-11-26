@@ -1,12 +1,13 @@
 -- Separate temporary preview and explicitly authorized asset output.
 local A=game:GetService("AssetService")
 local Studio=game:GetService("StudioService")
-local O={}
+local O={MAX_DIMENSION=2048}
 function O.create(mesh,anchor,o,name,source,preview,canContinue)
     local part
     local ok,result=pcall(function()
         assert(canContinue(),"Editor closed or play testing started")
         local center,size=mesh:GetCenter(),mesh:GetSize()
+        assert(math.max(size.X,size.Y,size.Z)<=O.MAX_DIMENSION,"Mesh dimensions exceed 2048 studs")
         local content,id
         if preview then
             content=Content.fromObject(mesh)

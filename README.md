@@ -1,40 +1,53 @@
-# PathForge / ROBLOX-splines v0.5
+# PathForge / ROBLOX-splines v1.0
 
-Studio-only procedural environment toolkit. No runtime scripts or automatic asset uploads.
+A Studio-only plugin that builds rails, roads, walls, fences, pipes, custom asset rows and swept meshes along splines. It also handles junctions, terrain and scatter. No runtime scripts are added to your game, and nothing is uploaded unless you turn on uploads for that Generate.
 
-## Development update — November 24, 2026
-**v0.5 · Editor and repeat layers preview**
+한국어: Studio 언어가 한국어면 플러그인 화면이 자동으로 한국어로 나와요. 아래 **빠른 시작**의 버튼 이름은 영어/한국어를 함께 적었어요.
 
-A single path can now combine a base generator with up to 12 independent repeat overlays. The editor has four tabs, direct generator selection, optional axis handles and debounced upload-free previews. Circular extrusion normals are smoothed. Studio acceptance testing is still pending.
-
-Next: Studio verification, general multi-generator layers, asset library, caching and terrain-aware placement.
-
-[Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Testing](TESTING.md)
+[Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Studio checklist](TESTING.md) · [Release notes](RELEASE_NOTES.md)
 
 ## Install
-Download `PathForge.rbxmx`, insert into an empty Studio place, right-click the model in Explorer and Save as Local Plugin. Open Plugins > PathForge. Alternatively use Rojo 7: `rojo build -o PathForge.rbxmx`.
+1. Download `PathForge.rbxmx` from the latest GitHub release (or from this repository).
+2. In Studio, insert it into an empty place, right-click the model in Explorer and choose **Save as Local Plugin**.
+3. Open **Plugins > PathForge**.
 
-The editor UI follows Studio's language: Korean (한국어) when Studio is set to Korean, English otherwise. Translations live in `src/Locale.lua`.
+Alternatively build it yourself: `python tools/build_rbxmx.py` (or Rojo 7: `rojo build -o PathForge.rbxmx`).
 
-## Workflow
-1. Path tab: add points in viewport; move, insert or edit XYZ. In Move mode, use axis handles if supported or surface dragging. Set smooth/linear and grid. Shape tab: select the base generator and material.
-2. Choose Rail/Road/Wall/Fence/Pipe (Part presets), Custom (repeat static source models), Deform (bend one static MeshPart), or Extrude (sweep a profile).
-3. Capture materials from selected parts into independent slots. For Extrude choose ExtrudedMesh slot, or select a MeshPart and click Use selected MeshPart appearance / Extrude to preserve its PBR maps and texture. This copies appearance, not source geometry.
-4. Extrude profiles: `rectangle`, `circle` (ellipse using width/height), `arch` (open double-sided shell, non-collidable), or ordered strictly convex custom coordinates such as `-2,-1;2,-1;2,1;-2,1` in studs. Set maximum segment length, turn angle, chord tolerance, UV length and perimeter per tile, and roll. Custom coordinates ignore width/height except validation. Rectangular and polygon corners are hard; round profiles use smooth cross-section normals.
-5. Layers tab: select any static source model in Explorer, Add selected model as repeat layer, set spacing, local side/height, yaw, roll, collision, and Apply layer settings. Add multiple independent overlays (up to 12). Disabled layers do not generate.
-6. Build tab: Preview now or enable Auto preview (debounced by 0.35 seconds, after dragging stops). Mesh bases and repeat layers preview without upload; built-in Part/Custom bases show path guides only. Preview overlays are capped at 1,000 parts.
-7. To commit a mesh, toggle Authorize ONE mesh upload to ON, then Generate/update. The mesh is uploaded to the current place owner (or Studio user in an unpublished place); permissions and moderation may prevent it. Asset uploads cannot be undone by Studio Undo. Other modes do not upload.
-8. Load selected saved path to edit again. Reload after moving or externally changing a generated path. Existing v0.1/v0.2 world-space metadata remains readable.
+## Quick start / 빠른 시작
+1. **Path / 경로**: **Add points in viewport / 뷰포트에서 점 추가**, then click on the ground. Use **Move nodes / 드래그로 노드 이동** or the XYZ fields to adjust points. **Undo draft edit / 초안 편집 취소** reverts point edits.
+2. **Shape / 형태**: pick a generator (Rail, Road, Wall, Fence, Pipe, Custom, Deform, Extrude). **Add generator / 생성기 추가** stacks more generators on the same path, up to 8.
+3. **Build / 빌드**: use **Preview now / 지금 미리보기** to check the result without uploading, then **Generate / 생성**. Generated models can be reloaded and updated later.
+
+## Features
+- **Generator stack**: up to 8 generators share one path. Each has its own settings, material slots, source asset and on/off switch.
+- **Part generators** (Rail, Road, Wall, Fence, Pipe): straight stretches merge into single parts, and pipe joints appear only at bends.
+- **Custom**: repeats any static Model or BasePart. **Repeat layers** (up to 12) add more independent rows, such as lamps or posts.
+- **Extrude**: sweeps a rectangle, circle, open arch or convex custom profile, with adaptive sampling, UVs and smooth round normals. Long sweeps are split into up to 8 meshes with invisible seams.
+- **Deform**: bends one static, dense MeshPart along the path.
+- **Library tab**: 21 material presets, your own saved materials, an asset library and **recipes** (a whole generator stack plus layers, reusable on any path). Everything is stored in `ServerStorage > PathForgeLibrary`, so it travels with the place.
+- **Branches and junctions**: snap path ends onto other paths. When two roads with junctions enabled cross or meet, they share a pad. Generate refreshes the connected road geometry in the same undo step. Bridges more than 2 studs above are ignored.
+- **Terrain**: drape points onto the ground (optionally re-sampled to follow hills), then fill terrain under the path and carve terrain above it in one undo step.
+- **Scatter and brush**: place assets in a band along the path with spacing, random scale and rotation, and a repeatable seed. Paint or erase them with a brush.
+- **Editor**: axis move handles, grid snapping, draft undo/redo, plugin actions you can bind to keys (File > Advanced > Customize Shortcuts), red highlighting for invalid fields, Studio theme colors, and Korean/English UI.
+
+## Mesh uploads
+Extrude and Deform need a mesh asset to keep their shape after the place is saved. Turn on **Authorize mesh uploads for next Generate**, then Generate. Each enabled mesh generator uploads its mesh (or one mesh per chunk) to the place owner, or to your account in an unpublished place. Studio Undo cannot remove an upload. Previews never upload. Part-based generators are built and every mesh is planned before any upload starts, so input errors stop the build first.
 
 ## Limits
-- Studio runtime and upload/persistence behavior have not been tested. Use an empty test place.
-- Extrude uses one mesh, limited to 60,000 vertices, 20,000 triangles and 2,000 path segments; no chunking yet. Extremely sharp curves may self-intersect; no automatic intersection repair.
-- Extrude UVs use path distance and profile perimeter; rendering of texture repetition and PBR depends on the source asset. Cap UVs use planar mapping. Deform retains source UVs and still requires dense source topology; subdivision is not implemented for imported meshes.
-- Open arches are visual shells, not thick tunnels. Collision for open shells is disabled. Closed meshes support selectable collision fidelity.
-- MaterialVariant references must exist in the destination place. Built-in Part presets still have segmented curves.
-- Repeat overlays share a path with one base generator. Multiple mesh generators per path, terrain, scatter, general graph, and caching are not implemented.
+- 128 control points per path, 6,500 parts per generated model, and 60,000 vertices / 20,000 triangles per mesh chunk. Merged parts and mesh chunks fit within Roblox's 2,048-stud limit per axis.
+- Custom Extrude profiles must be strictly convex. Very sharp curves can self-intersect.
+- Junction pads are flat slabs. They do not blend curb shapes or road markings.
+- MaterialVariants must exist in the destination place.
 
-## Verification
-Run `pip install lupa==2.8` then `python tests/run.py` to execute the 15 geometry self-tests plus regression, translation and package checks outside Studio (also run by GitHub Actions). Static analysis of every script, including `Plugin.server.lua`, uses selene 0.30 (`selene src`, config in `selene.toml` / `roblox_globals.yml`). After editing `src/`, rebuild the package with `python tools/build_rbxmx.py`. Studio UI behaviour is still untested; see TESTING.md for manual acceptance steps.
+## Development
+```
+pip install lupa==2.8
+python tests/run.py          # all tests (also run by GitHub Actions)
+selene src                   # lint (selene 0.30)
+python tools/build_rbxmx.py  # rebuild PathForge.rbxmx after editing src/
+```
+`tests/run.py` runs the in-Studio self-tests, the module tests in `tests/test_*.lua`, a smoke test that loads the real plugin script in a fake Studio (`tests/studio_mock.lua`) and clicks through its buttons in English and Korean, translation coverage, and a check that `PathForge.rbxmx` is up to date.
 
-API references: https://create.roblox.com/docs/reference/engine/classes/EditableMesh and https://create.roblox.com/docs/reference/engine/classes/AssetService.
+Releases: push a tag such as `v1.0.0`. The release workflow re-runs the tests and attaches `PathForge.rbxmx` to a GitHub release, using `RELEASE_NOTES.md` as the notes.
+
+Source layout: `Plugin.server.lua` (UI wiring), `Geometry`, `Presets`, `Builder`, `Extrude`, `Deform`, `MeshOutput`, `Layers`, `Persist`, `Library`, `Network`, `Terrain`, `Scatter`, `Cache`, `DraftHistory`, `Materials`, `Assets`, `Ui`, `Json`, `Locale`, `Version`, `SelfTest`.

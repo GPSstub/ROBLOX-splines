@@ -1,18 +1,18 @@
 # Roadmap
 
-## v0.5 editor preview
-- [x] Tabbed editor, direct preset selection
-- [x] Optional axis movement handles
-- [x] Repeat overlays and saved layer configuration
-- [x] Debounced automatic mesh/overlay preview
-- [x] Smooth round-profile normals
-- [ ] Execute Studio self-tests and acceptance checklist
+Each version ships with automated tests (`python tests/run.py`) and a short Studio
+checklist in TESTING.md. Studio checks happen every version, not only at v1.0.
 
-## Next
-- [ ] General multi-generator layers, including multiple mesh sweeps
-- [ ] Asset/material library UI and reusable recipes
-- [ ] Mesh caching, chunking, imported mesh subdivision
-- [ ] Full preview coverage and improved gizmos
-- [ ] Scatter, brush placement, terrain-aware editing
+| Version | Goal | Status |
+|---|---|---|
+| v0.5 | Editor preview, repeat layers | done |
+| v0.6 | Refactor into modules, generator stack | done |
+| v0.7 | Mesh quality, caching, optimization | done |
+| v0.8 | Asset and material library, recipes | done |
+| v0.9a | Branching paths and intersections | done |
+| v0.9b | Terrain draping, fill and carve | done |
+| v0.10 | Scatter and brush placement | done |
+| v0.11 | UI/UX polish | done |
+| v1.0 | Stabilization, real-use validation, release | code done; Studio validation and tag pending |
 
 No release dates are committed. Studio testing is a release blocker.
