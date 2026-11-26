@@ -855,9 +855,9 @@ label("Materials, assets and recipes are stored in ServerStorage &gt; PathForgeL
 -- Commit / load ----------------------------------------------------------------
 local function stageRoadUpdate(layout)
     local road=layout.road
-    local entries={}
+    local roadEntries={}
     for i,e in ipairs(road.entries) do
-        entries[i]=e.o.preset=="Road" and e or {o=e.o,enabled=false}
+        roadEntries[i]=e.o.preset=="Road" and e or {o=e.o,enabled=false}
     end
     local removed,retained={},0
     for _,child in ipairs(road.output:GetChildren()) do
@@ -870,7 +870,7 @@ local function stageRoadUpdate(layout)
             end
         end
     end
-    local staged=Builder.stack(road.path,entries,{budget=MAX_PARTS-retained,cache=specCache,
+    local staged=Builder.stack(road.path,roadEntries,{budget=MAX_PARTS-retained,cache=specCache,
         junctions=layout.junctions,junctionPads=layout.pads})
     return {road=road,staged=staged,removed=removed,added=staged:GetChildren()}
 end
@@ -3186,7 +3186,7 @@ function N.crossings(a,b,maxGap)
         local daHit,q,gap=N.project(a,p)
         if gap&lt;=tolerance and math.abs(p.Y-q.Y)&lt;=maxGap then out[#out+1]={da=daHit,db=d,position=q} end
     end
-    table.sort(out,function(x,y) return x.da&lt;y.da end)
+    table.sort(out,function(p1,p2) return p1.da&lt;p2.da end)
     local merged={}
     for _,c in ipairs(out) do
         local last=merged[#merged]

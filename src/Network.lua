@@ -97,7 +97,7 @@ function N.crossings(a,b,maxGap)
         local daHit,q,gap=N.project(a,p)
         if gap<=tolerance and math.abs(p.Y-q.Y)<=maxGap then out[#out+1]={da=daHit,db=d,position=q} end
     end
-    table.sort(out,function(x,y) return x.da<y.da end)
+    table.sort(out,function(p1,p2) return p1.da<p2.da end)
     local merged={}
     for _,c in ipairs(out) do
         local last=merged[#merged]

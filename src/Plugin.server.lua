@@ -854,9 +854,9 @@ label("Materials, assets and recipes are stored in ServerStorage > PathForgeLibr
 -- Commit / load ----------------------------------------------------------------
 local function stageRoadUpdate(layout)
     local road=layout.road
-    local entries={}
+    local roadEntries={}
     for i,e in ipairs(road.entries) do
-        entries[i]=e.o.preset=="Road" and e or {o=e.o,enabled=false}
+        roadEntries[i]=e.o.preset=="Road" and e or {o=e.o,enabled=false}
     end
     local removed,retained={},0
     for _,child in ipairs(road.output:GetChildren()) do
@@ -869,7 +869,7 @@ local function stageRoadUpdate(layout)
             end
         end
     end
-    local staged=Builder.stack(road.path,entries,{budget=MAX_PARTS-retained,cache=specCache,
+    local staged=Builder.stack(road.path,roadEntries,{budget=MAX_PARTS-retained,cache=specCache,
         junctions=layout.junctions,junctionPads=layout.pads})
     return {road=road,staged=staged,removed=removed,added=staged:GetChildren()}
 end
