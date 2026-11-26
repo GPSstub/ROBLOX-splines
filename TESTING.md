@@ -92,3 +92,8 @@
 - [ ] 그룹 소유 플레이스에서 Extrude 업로드 1회 → 에셋 소유자가 그룹인지
 - [ ] v0.5로 만든 예전 모델을 불러와서 다시 생성해도 모양이 같은지
 - [ ] 모두 통과하면 GitHub에서 `v1.0.0` 태그를 만들면 릴리스가 자동으로 올라가요
+
+## Safety hardening (unreleased)
+- Terrain: preview without voxel edits; cancel; change path/settings and verify invalidation; click twice to apply; verify actual Studio Undo and save/reopen.
+- Recipe: save with sources, delete originals, reload and generate. Generate before overwriting a recipe whose snapshots are still referenced by the draft.
+- Scatter: use dense models and brush repeatedly to reach the shared cap. A refused batch must leave existing scatter intact.

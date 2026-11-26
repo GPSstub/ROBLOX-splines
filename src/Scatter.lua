@@ -1,7 +1,7 @@
 -- Scatter: random but repeatable placement of assets in a band along a path,
 -- and brush painting/erasing in a circle. Pure planning; the plugin places clones.
 local G=require(script.Parent.Geometry)
-local S={MAX_COUNT=2000}
+local S={MAX_COUNT=2000,MAX_PARTS=6500}
 
 -- Deterministic generator (same seed -> same layout in Studio and tests).
 function S.rng(seed)
@@ -109,4 +109,21 @@ end
 
 -- Picks one of n assets.
 function S.pick(rng,n) return math.min(n,math.floor(rng()*n)+1) end
+-- Exact deterministic source choices; count all existing BaseParts before cloning.
+function S.sources(items,pool,seed,countParts,existingParts)
+    assert(#pool>0,"Pick scatter assets first")
+    local counts={}
+    local rng=S.rng(seed)
+    local total=existingParts
+    assert(total<=S.MAX_PARTS,"Scatter part budget exceeded (6500)")
+    local sources={}
+    for i=1,#items do
+        local a=pool[S.pick(rng,#pool)]
+        if not counts[a] then counts[a]=countParts(a) end
+        total+=counts[a]
+        assert(total<=S.MAX_PARTS,"Scatter part budget exceeded (6500)")
+        sources[i]=a
+    end
+    return sources,total
+end
 return S

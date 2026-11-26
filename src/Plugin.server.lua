@@ -56,6 +56,11 @@ local materialSlot=1
 local preview=nil
 local draftGuides,draftNodes={},{}
 local previewFolder,previewMeshes=nil,{}
+local terrainState={}
+local function clearTerrainPreview()
+    terrainState.pending=nil
+    if terrainState.folder then terrainState.folder:Destroy(); terrainState.folder=nil end
+end
 local liveEnabled,previewBusy,previewRevision,previewDue=false,false,0,nil
 local mode,dragging,lastMove=nil,false,0
 local axisHandles,axisStart,axisNode
@@ -164,6 +169,7 @@ local function setLive(enabled)
     if liveButton then liveButton.Text=T(enabled and "Auto preview: ON" or "Auto preview: OFF") end
 end
 local function clearMeshPreview()
+    clearTerrainPreview()
     previewRevision+=1
     if liveEnabled then previewDue=os.clock()+0.35 end
     if previewFolder then previewFolder:Destroy(); previewFolder=nil end
@@ -354,6 +360,7 @@ input("terrainClear","Clear height above path (studs)",12)
 local terrainMaterial="Ground"
 local terrainMaterialButton=button("Fill material: Ground",function()
     terrainMaterial=TerrainPlan.MATERIALS[(table.find(TerrainPlan.MATERIALS,terrainMaterial) or 1)%#TerrainPlan.MATERIALS+1]
+    clearTerrainPreview()
 end)
 terrainMaterialButton.Activated:Connect(function() terrainMaterialButton.Text=T("Fill material: "..terrainMaterial) end)
 button("Fill and carve terrain along path",guarded(function()
@@ -365,6 +372,30 @@ button("Fill and carve terrain along path",guarded(function()
     local path=pathFor()
     local plan=TerrainPlan.plan(path,{width=width or 4,shoulder=number("terrainShoulder",0,100),depth=number("terrainDepth",0,200),
         clear=number("terrainClear",0,200),step=4,offset=0})
+    TerrainPlan.checkBudget(plan)
+    local signature=path.key.."|"..tostring(width or 4).."|"..fields.terrainShoulder.Text.."|"..fields.terrainDepth.Text.."|"..fields.terrainClear.Text.."|"..terrainMaterial
+    if terrainState.pending and terrainState.pending.key~=signature then clearTerrainPreview() end
+    if not terrainState.pending then
+        setLive(false); stopMode(); clearMeshPreview()
+        if not preview then refreshPreview() end
+        terrainState.folder=Instance.new("Folder"); terrainState.folder.Name="TerrainPreview"; terrainState.folder.Archivable=false; terrainState.folder.Parent=preview
+        local ok,err=pcall(function()
+            for _,b in ipairs(plan.fill) do
+                local part=guidePart(terrainState.folder,"Fill",b.cf,b.size,Color3.fromRGB(60,180,100))
+                part.Transparency=0.7
+            end
+            for _,b in ipairs(plan.carve) do
+                local part=guidePart(terrainState.folder,"Carve",b.cf,b.size,Color3.fromRGB(230,80,70))
+                part.Transparency=0.7
+            end
+        end)
+        if not ok then clearTerrainPreview(); error(err,0) end
+        terrainState.pending={key=signature,plan=plan}
+        say("Terrain preview: green fills, red carves. Click again to apply, or cancel.")
+        return
+    end
+    plan=terrainState.pending.plan
+    clearTerrainPreview()
     local rec=History:TryBeginRecording("PathForgeTerrain","PathForge: Terrain along path")
     assert(rec,"Cannot start Studio undo recording. Try again.")
     local ok,err=pcall(function()
@@ -375,6 +406,7 @@ button("Fill and carve terrain along path",guarded(function()
     if not ok then error(err,0) end
     say(string.format("Terrain: %d fill and %d carve blocks. Undo reverts it in one step.",#plan.fill,#plan.carve))
 end))
+button("Cancel terrain preview",function() clearTerrainPreview(); say("Terrain preview cancelled.") end)
 label("01A  BRANCHES",22,C.muted)
 input("snapRadius","Branch snap radius (studs)",4)
 button("Snap path ends onto nearby paths",guarded(function()
@@ -670,17 +702,24 @@ local function scatterPositions(box)
 end
 local function place(box,items,seed)
     assert(#scatterPool>0,"Pick scatter assets first")
-    local rng=Scatter.rng(seed)
-    for _,it in ipairs(items) do
-        local p=it.position
-        local y=groundAt(p.X,p.Z)
-        if y then p=Vector3.new(p.X,y,p.Z) end
-        local c=Assets.clone(scatterPool[Scatter.pick(rng,#scatterPool)])
-        if c:IsA("Model") then c:ScaleTo(it.scale) else c.Size*=it.scale end
-        c:PivotTo(CFrame.new(p)*CFrame.Angles(0,math.rad(it.yaw),0))
-        Assets.configure(c,true,false)
-        c.Parent=box
-    end
+    local count=0
+    for _,d in ipairs(box:GetDescendants()) do if d:IsA("BasePart") then count+=1 end end
+    local sources=Scatter.sources(items,scatterPool,seed,Assets.count,count)
+    local stage=Instance.new("Folder")
+    local ok,err=pcall(function()
+        for i,it in ipairs(items) do
+            local p=it.position
+            local y=groundAt(p.X,p.Z)
+            if y then p=Vector3.new(p.X,y,p.Z) end
+            local c=Assets.clone(sources[i]); c.Parent=stage
+            if c:IsA("Model") then c:ScaleTo(it.scale) else c.Size*=it.scale end
+            c:PivotTo(CFrame.new(p)*CFrame.Angles(0,math.rad(it.yaw),0))
+            Assets.configure(c,true,false)
+        end
+    end)
+    if not ok then stage:Destroy(); error(err,0) end
+    for _,c in ipairs(stage:GetChildren()) do c.Parent=box end
+    stage:Destroy()
 end
 button("Use selected models as scatter assets",guarded(function()
     editAllowed()
@@ -837,7 +876,14 @@ recipeLabel=label("No saved recipes",24)
 row({{"Previous recipe",function() step("recipe",-1) end},{"Next recipe",function() step("recipe",1) end}})
 button("Save current setup as recipe",guarded(function()
     storeFields()
-    recorded("PathForge: Save recipe",function() Library.saveRecipe(Storage,fields.libName.Text,entries,repeatLayers,smooth) end)
+    local name=Library.validName(fields.libName.Text)
+    local folder=Library.folder(Storage,"Recipes",false)
+    local oldRecipe=folder and folder:FindFirstChild(name)
+    if oldRecipe then
+        for _,e in ipairs(entries) do assert(not e.source or not e.source:IsDescendantOf(oldRecipe),"Generate the loaded recipe before overwriting it") end
+        for _,l in ipairs(repeatLayers) do assert(not l.source or not l.source:IsDescendantOf(oldRecipe),"Generate the loaded recipe before overwriting it") end
+    end
+    recorded("PathForge: Save recipe",function() Library.saveRecipe(Storage,name,entries,repeatLayers,smooth) end)
     syncLibrary(); say("Saved to the library.")
 end),true)
 button("Load recipe into draft",guarded(function()
